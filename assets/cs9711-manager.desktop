@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CS9711 Fingerprint Manager
+GenericName=Fingerprint Manager
+Comment=Configure Chipsailing CS9711 fingerprint scanner
+Exec=cs9711-manager
+Icon=cs9711-manager
+Terminal=false
+Categories=Settings;HardwareSettings;System;
+Keywords=fingerprint;scanner;cs9711;biometric;chipsailing;biometria;digital;
+StartupNotify=true

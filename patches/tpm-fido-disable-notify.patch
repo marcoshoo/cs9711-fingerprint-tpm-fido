@@ -1,0 +1,17 @@
+--- a/userpresence/userpresence.go	2026-10-07 16:31:00.636693205 -0300
++++ b/userpresence/userpresence.go	2026-10-07 16:31:00.636711631 -0300
+@@ -90,14 +90,6 @@
+ 
+ 	log.Printf("userpresence: prompt=%s", prompt)
+ 
+-	// Send notification to user (non-blocking)
+-	notifyCmd := exec.Command("notify-send", "-u", "critical", "-t", "30000",
+-		"TPM-FIDO", prompt+"\n\nTouch fingerprint sensor to confirm.")
+-	if err := notifyCmd.Start(); err != nil {
+-		log.Printf("userpresence: notify-send failed to start: %v", err)
+-		// Continue anyway - fingerprint verification is the important part
+-	}
+-
+ 	// Run fprintd-verify with context timeout
+ 	log.Printf("userpresence: launching fprintd-verify")
+ 	fprintCmd := exec.CommandContext(ctx, "fprintd-verify")

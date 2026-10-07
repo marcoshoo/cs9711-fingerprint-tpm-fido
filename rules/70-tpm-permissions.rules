@@ -1,0 +1,1 @@
+KERNEL=="tpmrm0", MODE="0660", GROUP="tss", TAG+="uaccess"

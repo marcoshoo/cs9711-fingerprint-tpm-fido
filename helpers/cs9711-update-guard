@@ -1,0 +1,79 @@
+#!/bin/bash
+# ============================================================================
+# CS9711 Update Guard — DPkg Post-Invoke Hook
+# ============================================================================
+# Ensures the patched CS9711 libfprint driver survives system package updates
+# (e.g., when 'apt upgrade' installs upstream libfprint-2-2).
+# ============================================================================
+
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+CACHE_DIR="${CS9711_CACHE_DIR:-/var/lib/cs9711-fingerprint}"
+BROKEN_FLAG="$CACHE_DIR/BROKEN"
+
+# Portable logging: log to /var/log if root, otherwise user-accessible fallback
+if [ -w /var/log ] || [ "$(id -u)" -eq 0 ]; then
+    LOGF="/var/log/cs9711-guard.log"
+else
+    LOGF="/tmp/cs9711-guard.log"
+fi
+
+glog() {
+    echo "$(date '+%F %T') [GUARD] $1" >> "$LOGF" 2>/dev/null || true
+}
+
+[ -f "$CACHE_DIR/install-dir" ] || exit 0
+
+resolved() {
+    ldconfig -p 2>/dev/null | awk '/libfprint-2\.so\.2 /{print $NF; exit}'
+}
+
+missing_libs() {
+    ldd "$1" 2>/dev/null | awk '/not found/{print $1}' | sort -u | tr '\n' ' '
+}
+
+restore() {
+    local DIR
+    DIR=$(cat "$CACHE_DIR/install-dir" 2>/dev/null)
+    [ -n "$DIR" ] || return 1
+    mkdir -p "$DIR" 2>/dev/null
+    cp -a "$CACHE_DIR"/libfprint-2.so* "$DIR"/ 2>/dev/null
+    if [ -f "$CACHE_DIR/FPrint-2.0.typelib" ] && [ -s "$CACHE_DIR/typelib-dir" ]; then
+        local TDIR
+        TDIR=$(cat "$CACHE_DIR/typelib-dir" 2>/dev/null)
+        [ -n "$TDIR" ] && mkdir -p "$TDIR" 2>/dev/null && cp -a "$CACHE_DIR/FPrint-2.0.typelib" "$TDIR"/ 2>/dev/null
+    fi
+    ldconfig 2>/dev/null
+    systemctl restart fprintd >/dev/null 2>&1 || true
+}
+
+RESOLVED=$(resolved)
+
+# Case 1: Patched driver no longer active (upstream package overwrote or shadowed)
+if [ -z "$RESOLVED" ] || ! grep -aq "cs9711" "$RESOLVED" 2>/dev/null; then
+    CACHED_SO=$(ls "$CACHE_DIR"/libfprint-2.so.2* 2>/dev/null | head -1)
+    MISS_CACHE=""
+    [ -n "$CACHED_SO" ] && MISS_CACHE=$(missing_libs "$CACHED_SO")
+    if [ -n "$CACHED_SO" ] && [ -z "$MISS_CACHE" ]; then
+        glog "active libfprint ($RESOLVED) lacks cs9711 driver — restoring from cache"
+        restore
+        glog "restore completed"
+        RESOLVED=$(resolved)
+    else
+        glog "active libfprint lacks cs9711 AND cached copy is unloadable (missing: $MISS_CACHE) — rebuild required"
+        echo "missing-libs: $MISS_CACHE" > "$BROKEN_FLAG" 2>/dev/null
+        chmod 644 "$BROKEN_FLAG" 2>/dev/null
+        exit 0
+    fi
+fi
+
+# Case 2: Driver present but unloadable due to upgraded dependent libraries
+MISS=$(missing_libs "$RESOLVED")
+if [ -n "$MISS" ]; then
+    glog "patched libfprint is unloadable — missing: $MISS (rebuild required)"
+    echo "missing-libs: $MISS" > "$BROKEN_FLAG" 2>/dev/null
+    chmod 644 "$BROKEN_FLAG" 2>/dev/null
+else
+    rm -f "$BROKEN_FLAG" 2>/dev/null
+fi
+
+exit 0

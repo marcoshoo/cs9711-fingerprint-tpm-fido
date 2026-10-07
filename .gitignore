@@ -1,0 +1,19 @@
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Temporary & Build artifacts
+*.tmp
+*.log
+/build/
+/builddir/
+/dist/
+__pycache__/
+*.pyc
+
+# OS & Dropbox artifacts
+.directory
+desktop.ini
