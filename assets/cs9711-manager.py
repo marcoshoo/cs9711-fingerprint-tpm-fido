@@ -8,6 +8,7 @@ driver maintenance. Uses GTK4 + libadwaita for native GNOME look.
 
 import gi
 import glob
+import json
 import logging
 import os
 import re
@@ -67,6 +68,62 @@ def get_app_version():
         return "dev"
 
 APP_VERSION = get_app_version()
+
+# ============================================================================
+# Internationalization (i18n)
+# ============================================================================
+
+def load_translations():
+    """Load translation catalogs from translations.json in script or share directory."""
+    candidates = [
+        os.path.join(SCRIPT_DIR, "translations.json"),
+        os.path.join(SCRIPT_DIR, "..", "assets", "translations.json"),
+        os.path.join(os.path.expanduser("~"), ".local", "share", "cs9711-manager", "translations.json"),
+        "/usr/local/share/cs9711-manager/translations.json",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as exc:
+                log.warning(f"Failed to load translations from {path}: {exc}")
+    return {}
+
+
+TRANSLATIONS = load_translations()
+
+
+
+def get_user_language():
+    """Resolve active language code from environment variables."""
+    raw = (
+        os.environ.get("LC_ALL")
+        or os.environ.get("LC_MESSAGES")
+        or os.environ.get("LANG")
+        or "en"
+    )
+    code = raw.split(".")[0]  # e.g. "pt_BR", "es_ES"
+    if code in TRANSLATIONS:
+        return code
+    family = code.split("_")[0]  # e.g. "pt", "es"
+    if family in TRANSLATIONS:
+        return family
+    if family == "pt" and "pt_BR" in TRANSLATIONS:
+        return "pt_BR"
+    return "en"
+
+
+CURRENT_LANG = get_user_language()
+
+
+def _(text: str) -> str:
+    """Translate string according to active language, fallback to original English."""
+    lang_dict = TRANSLATIONS.get(CURRENT_LANG)
+    if lang_dict and text in lang_dict:
+        return lang_dict[text]
+    return text
+
 
 PAM_DIR = "/etc/pam.d"
 # Vendor PAM dir: on modern openSUSE/Fedora, service files (sddm, sudo, polkit-1,
@@ -147,6 +204,12 @@ FINGERS = [
 ]
 
 FINGER_NAMES = {fid: fname for fid, fname in FINGERS}
+
+
+def get_finger_name(fid):
+    """Return localized name for a finger identifier."""
+    raw_name = FINGER_NAMES.get(fid, fid)
+    return _(raw_name)
 
 # ============================================================================
 # Styling
@@ -272,7 +335,7 @@ def is_scanner_connected():
                 continue
     except Exception as exc:  # never let detection crash the GUI
         log.debug(f"sysfs scan failed: {exc}")
-    rc, out, _ = run_cmd(["lsusb"])
+    rc, out, err = run_cmd(["lsusb"])
     connected = USB_ID in out if rc == 0 else False
     log.debug(f"Scanner connected: {connected} (lsusb fallback)")
     return connected
@@ -295,7 +358,7 @@ def driver_health():
     reports no device while lsusb still sees the scanner, which used to read
     as a USB problem. detail = the missing library names.
     """
-    rc, out, _ = run_cmd(
+    rc, out, err = run_cmd(
         ["sh", "-c", "ldconfig -p 2>/dev/null | awk '/libfprint-2\\.so\\.2 /{print $NF; exit}'"]
     )
     path = out.strip()
@@ -327,18 +390,47 @@ def get_enrolled_fingers():
 
 
 def get_retry_delay():
-    """Read CS9711_DEFAULT_RESET_SLEEP from source."""
-    try:
-        with open(CS9711_SRC) as f:
-            for line in f:
-                m = re.search(
-                    r"#define\s+CS9711_DEFAULT_RESET_SLEEP\s+(\d+)", line
-                )
-                if m:
-                    return int(m.group(1))
-    except FileNotFoundError:
-        pass
+    """Read CS9711_DEFAULT_RESET_SLEEP from config file or driver source."""
+    delay_file = "/var/lib/cs9711-fingerprint/retry_delay"
+    if os.path.exists(delay_file):
+        try:
+            with open(delay_file) as f:
+                val = int(f.read().strip())
+                if val >= 500:
+                    return val
+        except Exception:
+            pass
+    src_candidates = [
+        CS9711_SRC,
+        "/var/lib/cs9711-fingerprint/src/libfprint/drivers/cs9711/cs9711.c",
+    ]
+    for src in src_candidates:
+        if os.path.exists(src):
+            try:
+                with open(src) as f:
+                    for line in f:
+                        m = re.search(
+                            r"#define\s+CS9711_DEFAULT_RESET_SLEEP\s+(\d+)", line
+                        )
+                        if m:
+                            return int(m.group(1))
+            except Exception:
+                pass
     return 1500
+
+
+def get_reinstall_script():
+    """Find reinstall.sh across local or installed directories."""
+    candidates = [
+        os.path.join(SCRIPT_DIR, "reinstall.sh"),
+        os.path.join(SCRIPT_DIR, "..", "reinstall.sh"),
+        os.path.join(os.path.expanduser("~"), ".local", "share", "cs9711-manager", "reinstall.sh"),
+        "/usr/local/share/cs9711-manager/reinstall.sh",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def _managed_pam_files():
@@ -573,7 +665,7 @@ class CS9711ManagerApp(Adw.Application):
 class CS9711Window(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.set_title(f"CS9711 Fingerprint Manager v{APP_VERSION}")
+        self.set_title(f"{_('CS9711 Fingerprint Manager')} v{APP_VERSION}")
         # Wide enough for the two-column layout; the breakpoint below collapses
         # to a single column when the window (or the screen) is narrower.
         self.set_default_size(1120, 720)
@@ -591,15 +683,15 @@ class CS9711Window(Adw.ApplicationWindow):
 
         # Header bar
         header = Adw.HeaderBar()
-        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh status")
-        refresh_btn.connect("clicked", lambda _: self.refresh_all())
+        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh status"))
+        refresh_btn.connect("clicked", lambda btn: self.refresh_all())
         header.pack_end(refresh_btn)
 
         # About — author credit and project links. Standard for a desktop app
         # (every GNOME/KDE app carries one) and where users expect to find the
         # issue tracker.
         about_btn = Gtk.Button(icon_name=pick_icon("help-about-symbolic", "help-about"),
-                               tooltip_text="About this app")
+                               tooltip_text=_("About this app"))
         about_btn.connect("clicked", self.on_about)
         header.pack_end(about_btn)
         self.toolbar_view.add_top_bar(header)
@@ -607,9 +699,9 @@ class CS9711Window(Adw.ApplicationWindow):
         # Driver-health banner. A driver stranded by an OpenCV upgrade used to
         # be a subtitle halfway down the page; as a banner it is unmissable and
         # carries the fix as a button.
-        self.health_banner = Adw.Banner(revealed=False, button_label="Rebuild Driver")
+        self.health_banner = Adw.Banner(revealed=False, button_label=_("Rebuild Driver"))
         self.health_banner.connect(
-            "button-clicked", lambda *_: self.on_rebuild_driver(self._maintenance_rebuild_btn)
+            "button-clicked", lambda *args: self.on_rebuild_driver(self._maintenance_rebuild_btn)
         )
         self.toolbar_view.add_top_bar(self.health_banner)
 
@@ -683,8 +775,8 @@ class CS9711Window(Adw.ApplicationWindow):
         log.info("First launch check: no fingers enrolled, scanner connected — showing welcome dialog")
         if not self._has_enrolled_fingers and is_scanner_connected():
             dialog = Adw.AlertDialog(
-                heading="Welcome! Let's set up your fingerprint",
-                body=(
+                heading=_("Welcome! Let's set up your fingerprint"),
+                body=_(
                     "Your CS9711 scanner is connected and the driver is installed.\n\n"
                     "To start using fingerprint login, you need to enroll a finger. "
                     "This takes 15 touches on the scanner.\n\n"
@@ -693,8 +785,8 @@ class CS9711Window(Adw.ApplicationWindow):
                     "Click 'Start Enrollment' to begin — then place your finger on the scanner when prompted."
                 ),
             )
-            dialog.add_response("later", "Later")
-            dialog.add_response("enroll", "Start Enrollment")
+            dialog.add_response("later", _("Later"))
+            dialog.add_response("enroll", _("Start Enrollment"))
             dialog.set_response_appearance("enroll", Adw.ResponseAppearance.SUGGESTED)
             dialog.connect("response", self._on_first_launch_response)
             dialog.present(self)
@@ -728,15 +820,15 @@ class CS9711Window(Adw.ApplicationWindow):
         credit = Gtk.Label(use_markup=True, justify=Gtk.Justification.CENTER,
                            wrap=True, css_classes=["dim-label", "caption"])
         credit.set_markup(
-            f'Developed by <a href="{AUTHOR_URL}">{APP_AUTHOR}</a>'
+            f'{_("Developed by")} <a href="{AUTHOR_URL}">{APP_AUTHOR}</a>'
             f'  ·  <a href="mailto:{APP_AUTHOR_EMAIL}">{APP_AUTHOR_EMAIL}</a>'
-            f'  ·  <a href="{PROJECT_URL}">Source and issues on GitHub</a>'
+            f'  ·  <a href="{PROJECT_URL}">{_("Source and issues on GitHub")}</a>'
         )
         parent.append(credit)
 
         licence = Gtk.Label(
-            label=(f"CS9711 Fingerprint Manager v{APP_VERSION} — MIT licensed. "
-                   "Driver: archeYR/libfprint-CS9711, LGPL-2.1-or-later."),
+            label=(f"{_('CS9711 Fingerprint Manager')} v{APP_VERSION} — {_('MIT licensed.')} "
+                   f"{_('Driver: archeYR/libfprint-CS9711, LGPL-2.1-or-later.')}"),
             justify=Gtk.Justification.CENTER, wrap=True,
             css_classes=["dim-label", "caption"], margin_top=2,
         )
@@ -770,7 +862,7 @@ class CS9711Window(Adw.ApplicationWindow):
                        valign=Gtk.Align.CENTER, hexpand=True)
         inner.append(text)
 
-        self.hero_title = Gtk.Label(xalign=0, label="Checking…", css_classes=["title-2"])
+        self.hero_title = Gtk.Label(xalign=0, label=_("Checking…"), css_classes=["title-2"])
         self.hero_title.set_wrap(True)
         text.append(self.hero_title)
 
@@ -779,9 +871,9 @@ class CS9711Window(Adw.ApplicationWindow):
 
         chips = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, margin_top=8)
         text.append(chips)
-        self.pill_scanner = status_pill("Scanner")
-        self.pill_driver = status_pill("Driver")
-        self.pill_fingers = status_pill("Fingers")
+        self.pill_scanner = status_pill(_("Scanner"))
+        self.pill_driver = status_pill(_("Driver"))
+        self.pill_fingers = status_pill(_("Fingers"))
         for p in (self.pill_scanner, self.pill_driver, self.pill_fingers):
             chips.append(p)
 
@@ -790,14 +882,14 @@ class CS9711Window(Adw.ApplicationWindow):
     # ========================================================================
 
     def build_enrollment_section(self, parent):
-        group = Adw.PreferencesGroup(title="Fingerprint Enrollment",
-                                     description="15 touches required per finger")
+        group = Adw.PreferencesGroup(title=_("Fingerprint Enrollment"),
+                                     description=_("15 touches required per finger"))
         parent.append(group)
 
         # Enrollment status banner
         self.enroll_status_row = Adw.ActionRow(
-            title="Enrollment Status",
-            subtitle="Checking...",
+            title=_("Enrollment Status"),
+            subtitle=_("Checking..."),
         )
         self.enroll_status_row.add_prefix(
             Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
@@ -805,10 +897,10 @@ class CS9711Window(Adw.ApplicationWindow):
         group.add(self.enroll_status_row)
 
         # Finger selector
-        self.finger_dropdown = Adw.ComboRow(title="Finger to enroll")
+        self.finger_dropdown = Adw.ComboRow(title=_("Finger to enroll"))
         finger_names = Gtk.StringList()
-        for _, name in FINGERS:
-            finger_names.append(name)
+        for fid, name in FINGERS:
+            finger_names.append(_(name))
         self.finger_dropdown.set_model(finger_names)
         group.add(self.finger_dropdown)
 
@@ -825,19 +917,19 @@ class CS9711Window(Adw.ApplicationWindow):
                           halign=Gtk.Align.CENTER, margin_top=8, margin_bottom=16)
         parent.append(btn_box)
 
-        self.enroll_btn = Gtk.Button(label="Enroll", css_classes=["suggested-action"])
+        self.enroll_btn = Gtk.Button(label=_("Enroll"), css_classes=["suggested-action"])
         self.enroll_btn.connect("clicked", self.on_enroll_clicked)
         btn_box.append(self.enroll_btn)
 
-        self.verify_btn = Gtk.Button(label="Test Verify")
+        self.verify_btn = Gtk.Button(label=_("Test Verify"))
         self.verify_btn.connect("clicked", self.on_verify)
         btn_box.append(self.verify_btn)
 
-        self.delete_btn = Gtk.Button(label="Delete All", css_classes=["destructive-action"])
+        self.delete_btn = Gtk.Button(label=_("Delete All"), css_classes=["destructive-action"])
         self.delete_btn.connect("clicked", self.on_delete_fingers)
         btn_box.append(self.delete_btn)
 
-        self.cancel_enroll_btn = Gtk.Button(label="Cancel", visible=False)
+        self.cancel_enroll_btn = Gtk.Button(label=_("Cancel"), visible=False)
         self.cancel_enroll_btn.connect("clicked", self.on_cancel_enroll)
         btn_box.append(self.cancel_enroll_btn)
 
@@ -849,12 +941,14 @@ class CS9711Window(Adw.ApplicationWindow):
         log.info(f"User clicked Enroll (has_enrolled={self._has_enrolled_fingers})")
         if self._has_enrolled_fingers:
             dialog = Adw.AlertDialog(
-                heading="Fingerprints already enrolled",
-                body="You already have fingerprints enrolled. Enrolling a new finger "
-                     "will add to the existing ones. To start fresh, delete all first.",
+                heading=_("Fingerprints already enrolled"),
+                body=_(
+                    "You already have fingerprints enrolled. Enrolling a new finger "
+                    "will add to the existing ones. To start fresh, delete all first."
+                ),
             )
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("add", "Add Another Finger")
+            dialog.add_response("cancel", _("Cancel"))
+            dialog.add_response("add", _("Add Another Finger"))
             dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
             dialog.connect("response", self._on_reenroll_confirmed)
             dialog.present(self)
@@ -869,12 +963,12 @@ class CS9711Window(Adw.ApplicationWindow):
     def _start_enroll(self):
         idx = self.finger_dropdown.get_selected()
         finger_id = FINGERS[idx][0]
-        finger_name = FINGERS[idx][1]
+        finger_name = get_finger_name(finger_id)
 
         log.info(f"Starting enrollment: finger={finger_id} ({finger_name})")
         self.enroll_progress.set_visible(True)
         self.enroll_progress.set_fraction(0)
-        self.enroll_progress.set_text(f"Preparing {finger_name}...")
+        self.enroll_progress.set_text(_("Preparing {finger_name}...").format(finger_name=finger_name))
         self.enroll_btn.set_sensitive(False)
         self.cancel_enroll_btn.set_visible(True)
         self._enroll_cancel = False
@@ -890,7 +984,7 @@ class CS9711Window(Adw.ApplicationWindow):
                 else:
                     log.debug(f"Finger {finger_id} not enrolled — skipping delete")
 
-                self._enroll_progress_text = f"Enrolling {finger_name}... Touch the scanner NOW"
+                self._enroll_progress_text = _("Enrolling {finger_name}... Touch the scanner NOW").format(finger_name=finger_name)
                 GLib.idle_add(lambda: (self.enroll_progress.set_text(self._enroll_progress_text), False)[-1])
 
                 log.info(f"Launching fprintd-enroll -f {finger_id} (polkit auth expected)")
@@ -902,7 +996,7 @@ class CS9711Window(Adw.ApplicationWindow):
                 for line in self._enroll_process.stdout:
                     if self._enroll_cancel:
                         self._enroll_process.terminate()
-                        GLib.idle_add(self._enroll_done, "Cancelled", False)
+                        GLib.idle_add(self._enroll_done, _("Cancelled"), False)
                         return
                     line = line.strip()
                     low = line.lower()
@@ -913,51 +1007,51 @@ class CS9711Window(Adw.ApplicationWindow):
                         GLib.idle_add(
                             self._enroll_update,
                             frac,
-                            f"Touch {touch_count}/15 — good, keep going!",
+                            _("Touch {count}/15 — good, keep going!").format(count=touch_count),
                         )
                     elif "enroll-completed" in low:
-                        GLib.idle_add(self._enroll_done, "Enrollment complete!", True)
+                        GLib.idle_add(self._enroll_done, _("Enrollment complete!"), True)
                         return
                     elif "enroll-retry-scan" in low or "retry" in low:
                         GLib.idle_add(
                             self._enroll_update,
                             touch_count / 15.0,
-                            f"Touch {touch_count}/15 — bad read, try again",
+                            _("Touch {count}/15 — bad read, try again").format(count=touch_count),
                         )
                     elif "enroll-swipe-too-short" in low or "too short" in low:
                         GLib.idle_add(
                             self._enroll_update,
                             touch_count / 15.0,
-                            f"Touch {touch_count}/15 — too short, hold longer",
+                            _("Touch {count}/15 — too short, hold longer").format(count=touch_count),
                         )
                     elif "enroll-finger-not-centered" in low or "not centered" in low:
                         GLib.idle_add(
                             self._enroll_update,
                             touch_count / 15.0,
-                            f"Touch {touch_count}/15 — center your finger",
+                            _("Touch {count}/15 — center your finger").format(count=touch_count),
                         )
                     elif "enroll-remove-and-retry" in low or "remove" in low:
                         GLib.idle_add(
                             self._enroll_update,
                             touch_count / 15.0,
-                            f"Touch {touch_count}/15 — lift and touch again",
+                            _("Touch {count}/15 — lift and touch again").format(count=touch_count),
                         )
                     elif "enroll-failed" in low or "enroll-unknown-error" in low:
-                        GLib.idle_add(self._enroll_done, "Enrollment failed — try again", False)
+                        GLib.idle_add(self._enroll_done, _("Enrollment failed — try again"), False)
                         return
                     elif "enroll-data-full" in low:
-                        GLib.idle_add(self._enroll_done, "Storage full — delete old prints first", False)
+                        GLib.idle_add(self._enroll_done, _("Storage full — delete old prints first"), False)
                         return
                     # Ignore noise: fprintd debug lines like "ListEnrolledFingers failed"
 
                 self._enroll_process.wait()
                 if self._enroll_process.returncode == 0:
-                    GLib.idle_add(self._enroll_done, "Enrollment complete!", True)
+                    GLib.idle_add(self._enroll_done, _("Enrollment complete!"), True)
                 else:
-                    GLib.idle_add(self._enroll_done, "Enrollment failed", False)
+                    GLib.idle_add(self._enroll_done, _("Enrollment failed"), False)
 
             except Exception as e:
-                GLib.idle_add(self._enroll_done, f"Error: {e}", False)
+                GLib.idle_add(self._enroll_done, _("Error: {e}").format(e=e), False)
 
         threading.Thread(target=do_enroll, daemon=True).start()
 
@@ -973,17 +1067,19 @@ class CS9711Window(Adw.ApplicationWindow):
         self.cancel_enroll_btn.set_visible(False)
         self._enroll_process = None
         if success:
-            self.enroll_progress.set_text("All 15 touches done! Enrollment saved.")
+            self.enroll_progress.set_text(_("All 15 touches done! Enrollment saved."))
             self.refresh_all()
             # Ask user if they want to verify
             dialog = Adw.AlertDialog(
-                heading="Enrollment complete!",
-                body="All 15 touches recorded successfully.\n\n"
-                     "Would you like to do a quick verification touch to confirm "
-                     "your fingerprint is working?",
+                heading=_("Enrollment complete!"),
+                body=_(
+                    "All 15 touches recorded successfully.\n\n"
+                    "Would you like to do a quick verification touch to confirm "
+                    "your fingerprint is working?"
+                ),
             )
-            dialog.add_response("skip", "Skip")
-            dialog.add_response("verify", "Verify Now")
+            dialog.add_response("skip", _("Skip"))
+            dialog.add_response("verify", _("Verify Now"))
             dialog.set_response_appearance("verify", Adw.ResponseAppearance.SUGGESTED)
             dialog.connect("response", self._on_post_enroll_verify_response)
             dialog.present(self)
@@ -995,12 +1091,12 @@ class CS9711Window(Adw.ApplicationWindow):
     def _on_post_enroll_verify_response(self, dialog, response):
         log.info(f"Post-enroll verify dialog response: {response}")
         if response == "verify":
-            self.show_toast("Touch the scanner once to verify...")
-            self.enroll_progress.set_text("Verification — touch the scanner once...")
+            self.show_toast(_("Touch the scanner once to verify..."))
+            self.enroll_progress.set_text(_("Verification — touch the scanner once..."))
             self._auto_verify_after_enroll()
         else:
-            self.show_toast("Enrollment saved — you're all set!")
-            self.enroll_progress.set_text("Enrollment saved.")
+            self.show_toast(_("Enrollment saved — you're all set!"))
+            self.enroll_progress.set_text(_("Enrollment saved."))
 
     def _auto_verify_after_enroll(self):
         """Auto-verify after enrollment to confirm the fingerprint works."""
@@ -1020,13 +1116,13 @@ class CS9711Window(Adw.ApplicationWindow):
     def _post_enroll_verify_done(self, success):
         self.verify_btn.set_sensitive(True)
         if success:
-            self.enroll_progress.set_text("Fingerprint verified! Everything is working.")
+            self.enroll_progress.set_text(_("Fingerprint verified! Everything is working."))
             self.enroll_progress.set_fraction(1.0)
-            self.show_toast("Fingerprint verified! You're all set.")
+            self.show_toast(_("Fingerprint verified! You're all set."))
         else:
-            self.enroll_progress.set_text("Verification failed — try Test Verify again")
+            self.enroll_progress.set_text(_("Verification failed — try Test Verify again"))
             self.enroll_progress.set_fraction(0)
-            self.show_toast("Verification didn't match — try again with Test Verify")
+            self.show_toast(_("Verification didn't match — try again with Test Verify"))
         return False
 
     def on_cancel_enroll(self, btn):
@@ -1042,18 +1138,18 @@ class CS9711Window(Adw.ApplicationWindow):
         log.info("User clicked Test Verify")
         self.enroll_progress.set_visible(True)
         self.enroll_progress.set_fraction(0)
-        self.enroll_progress.set_text("Touch the scanner to verify...")
+        self.enroll_progress.set_text(_("Touch the scanner to verify..."))
         self.verify_btn.set_sensitive(False)
 
         def do_verify():
             rc, out, err = run_cmd(["fprintd-verify"], timeout=30)
             combined = f"{out}\n{err}".lower()
             if "verify-match" in combined:
-                GLib.idle_add(self._verify_done, "Fingerprint verified!", True)
+                GLib.idle_add(self._verify_done, _("Fingerprint verified!"), True)
             elif "verify-no-match" in combined:
-                GLib.idle_add(self._verify_done, "No match — try again or re-enroll", False)
+                GLib.idle_add(self._verify_done, _("No match — try again or re-enroll"), False)
             else:
-                msg = out or err or "Verification timed out"
+                msg = out or err or _("Verification timed out")
                 GLib.idle_add(self._verify_done, msg, False)
 
         threading.Thread(target=do_verify, daemon=True).start()
@@ -1069,11 +1165,11 @@ class CS9711Window(Adw.ApplicationWindow):
     def on_delete_fingers(self, btn):
         log.info("User clicked Delete All")
         dialog = Adw.AlertDialog(
-            heading="Delete all fingerprints?",
-            body="You will need to re-enroll after deletion.",
+            heading=_("Delete all fingerprints?"),
+            body=_("You will need to re-enroll after deletion."),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("delete", "Delete All")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete All"))
         dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", self._on_delete_confirmed)
         dialog.present(self)
@@ -1113,9 +1209,9 @@ class CS9711Window(Adw.ApplicationWindow):
             def _done():
                 self.delete_btn.set_sensitive(True)
                 if rc == 0:
-                    self.show_toast("All fingerprints deleted")
+                    self.show_toast(_("All fingerprints deleted"))
                 else:
-                    self.show_toast(f"Delete failed: {msg}")
+                    self.show_toast(_("Delete failed: {msg}").format(msg=msg))
                 self.refresh_all()
                 return False
             GLib.idle_add(_done)
@@ -1137,14 +1233,14 @@ class CS9711Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(
             # NB: PreferencesGroup titles are parsed as Pango markup — a bare
             # ampersand here raises a markup error and blanks the heading.
-            title="Scanner and Authentication",
-            description="How the scanner paces retries, and how many tries before password",
+            title=_("Scanner and Authentication"),
+            description=_("How the scanner paces retries, and how many tries before password"),
         )
         parent.append(group)
 
         # Retry delay
-        self.delay_row = Adw.ActionRow(title="Retry Delay",
-                                       subtitle="Pause between scan attempts (ms)")
+        self.delay_row = Adw.ActionRow(title=_("Retry Delay"),
+                                       subtitle=_("Pause between scan attempts (ms)"))
         group.add(self.delay_row)
 
         delay_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
@@ -1167,15 +1263,15 @@ class CS9711Window(Adw.ApplicationWindow):
 
         # Rebuild notice
         self.rebuild_notice = Adw.ActionRow(
-            title="Rebuild Required",
-            subtitle="Retry delay changes require a driver rebuild to take effect",
+            title=_("Rebuild Required"),
+            subtitle=_("Retry delay changes require a driver rebuild to take effect"),
             visible=False,
         )
         self.rebuild_notice.add_prefix(
             Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
         )
         self.rebuild_apply_btn = Gtk.Button(
-            label="Rebuild Now", css_classes=["suggested-action"],
+            label=_("Rebuild Now"), css_classes=["suggested-action"],
             valign=Gtk.Align.CENTER
         )
         self.rebuild_apply_btn.connect("clicked", self.on_rebuild_with_delay)
@@ -1197,10 +1293,10 @@ class CS9711Window(Adw.ApplicationWindow):
         new_delay = int(self.delay_adj.get_value())
 
         btn.set_sensitive(False)
-        btn.set_label("Rebuilding...")
+        btn.set_label(_("Rebuilding..."))
 
         def do_rebuild():
-            # Update source file
+            # Update source file if present locally
             if os.path.exists(CS9711_SRC):
                 cmd = (
                     f"sed -i 's/#define CS9711_DEFAULT_RESET_SLEEP.*/"
@@ -1210,21 +1306,25 @@ class CS9711Window(Adw.ApplicationWindow):
                 subprocess.run(["bash", "-c", cmd])
 
             # Rebuild and install
-            reinstall = os.path.join(SCRIPT_DIR, "reinstall.sh")
+            reinstall = get_reinstall_script()
+            if not reinstall:
+                GLib.idle_add(self._rebuild_done, new_delay, False, _("Rebuild failed: {err}").format(err="reinstall.sh not found"))
+                return
+
             rc, out, err = run_cmd(
-                ["pkexec", "bash", reinstall], timeout=300
+                ["pkexec", "bash", reinstall, str(new_delay)], timeout=300
             )
 
             if rc == 0:
-                GLib.idle_add(self._rebuild_done, new_delay, True, "Driver rebuilt!")
+                GLib.idle_add(self._rebuild_done, new_delay, True, _("Driver rebuilt!"))
             else:
-                GLib.idle_add(self._rebuild_done, new_delay, False, f"Rebuild failed: {err[:100]}")
+                GLib.idle_add(self._rebuild_done, new_delay, False, _("Rebuild failed: {err}").format(err=err[:100]))
 
         threading.Thread(target=do_rebuild, daemon=True).start()
 
     def _rebuild_done(self, delay, success, message):
         self.rebuild_apply_btn.set_sensitive(True)
-        self.rebuild_apply_btn.set_label("Rebuild Now")
+        self.rebuild_apply_btn.set_label(_("Rebuild Now"))
         if success:
             self._original_delay = delay
             self.rebuild_notice.set_visible(False)
@@ -1241,8 +1341,8 @@ class CS9711Window(Adw.ApplicationWindow):
         # Max tries
         self.tries_adj = Gtk.Adjustment(value=7, lower=1, upper=15, step_increment=1)
         self.tries_row = Adw.SpinRow(
-            title="Max Attempts",
-            subtitle="Number of fingerprint tries before password fallback",
+            title=_("Max Attempts"),
+            subtitle=_("Number of fingerprint tries before password fallback"),
             adjustment=self.tries_adj,
         )
         group.add(self.tries_row)
@@ -1250,8 +1350,8 @@ class CS9711Window(Adw.ApplicationWindow):
         # Timeout
         self.timeout_adj = Gtk.Adjustment(value=30, lower=5, upper=120, step_increment=5)
         self.timeout_row = Adw.SpinRow(
-            title="Timeout (seconds)",
-            subtitle="Total time window for all fingerprint attempts",
+            title=_("Timeout (seconds)"),
+            subtitle=_("Total time window for all fingerprint attempts"),
             adjustment=self.timeout_adj,
         )
         group.add(self.timeout_row)
@@ -1259,10 +1359,10 @@ class CS9711Window(Adw.ApplicationWindow):
         # Apply button with note about password
         apply_row = Adw.ActionRow(
             title="",
-            subtitle="Requires your login password (system files need admin access)",
+            subtitle=_("Requires your login password (system files need admin access)"),
         )
         self.pam_apply_btn = Gtk.Button(
-            label="Apply PAM Settings", css_classes=["suggested-action"],
+            label=_("Apply PAM Settings"), css_classes=["suggested-action"],
             valign=Gtk.Align.CENTER
         )
         self.pam_apply_btn.connect("clicked", self.on_apply_pam)
@@ -1275,7 +1375,7 @@ class CS9711Window(Adw.ApplicationWindow):
         log.info(f"User clicked Apply PAM: max_tries={max_tries} timeout={timeout}")
 
         btn.set_sensitive(False)
-        btn.set_label("Applying...")
+        btn.set_label(_("Applying..."))
 
         def do_apply():
             # Re-stamp the options onto every location that is currently ON,
@@ -1291,10 +1391,9 @@ class CS9711Window(Adw.ApplicationWindow):
             if not enabled:
                 def _noop():
                     btn.set_sensitive(True)
-                    btn.set_label("Apply PAM Settings")
+                    btn.set_label(_("Apply PAM Settings"))
                     self.show_toast(
-                        "Nothing enabled yet — turn on a switch under "
-                        "“Where to Use Fingerprint”; these settings apply with it"
+                        _("Nothing enabled yet — turn on a switch under “Where to Use Fingerprint”; these settings apply with it")
                     )
                     return False
                 GLib.idle_add(_noop)
@@ -1313,17 +1412,19 @@ for cf in common-auth common-auth-pc; do
   [ -f "$ETC/$cf" ] && grep -q pam_fprintd "$ETC/$cf" && sed -i '/pam_fprintd/d' "$ETC/$cf"
 done
 true''')
-            rc, _, err = run_as_root("\n".join(parts))
+            rc, out, err = run_as_root("\n".join(parts))
             def _done():
                 btn.set_sensitive(True)
-                btn.set_label("Apply PAM Settings")
+                btn.set_label(_("Apply PAM Settings"))
                 if rc == 0:
+                    enabled_tr = [_(n) for n in enabled]
                     self.show_toast(
-                        f"PAM updated: {max_tries} tries, {timeout}s timeout "
-                        f"(applied to: {', '.join(enabled)})"
+                        _("PAM updated: {tries} tries, {timeout}s timeout (applied to: {locations})").format(
+                            tries=max_tries, timeout=timeout, locations=', '.join(enabled_tr)
+                        )
                     )
                 else:
-                    self.show_toast(f"Failed: {err[:80]}")
+                    self.show_toast(_("Failed: {err}").format(err=err[:80]))
                 # switches re-read real state — authoritative
                 self._set_auth_switches(get_pam_auth_locations())
                 return False
@@ -1337,9 +1438,9 @@ true''')
 
     def build_auth_section(self, parent):
         group = Adw.PreferencesGroup(
-            title="Where to Use Fingerprint",
-            description="Turn fingerprint on or off for each place independently — "
-                        "password always still works",
+            title=_("Where to Use Fingerprint"),
+            description=_("Turn fingerprint on or off for each place independently — "
+                          "password always still works"),
         )
         parent.append(group)
 
@@ -1353,7 +1454,7 @@ true''')
         }
 
         for name, icon in icons.items():
-            row = Adw.SwitchRow(title=name, subtitle="Checking...")
+            row = Adw.SwitchRow(title=_(name), subtitle=_("Checking..."))
             row.add_prefix(Gtk.Image.new_from_icon_name(icon))
             row.connect("notify::active", self.on_auth_toggle, name)
             self.auth_rows[name] = row
@@ -1368,7 +1469,7 @@ true''')
         for name, row in self.auth_rows.items():
             enabled = bool(locations.get(name, False))
             row.set_active(enabled)
-            row.set_subtitle("On" if enabled else "Off")
+            row.set_subtitle(_("On") if enabled else _("Off"))
         self._auth_updating = False
 
     def on_auth_toggle(self, row, _pspec, name):
@@ -1382,7 +1483,7 @@ true''')
             mt, to = 7, 30
         cmd = pam_toggle_cmd(name, enable, mt, to)
         row.set_sensitive(False)
-        row.set_subtitle("Applying…")
+        row.set_subtitle(_("Applying…"))
 
         def work():
             rc, out, err = run_as_root(cmd)
@@ -1392,11 +1493,13 @@ true''')
 
     def _after_auth_toggle(self, name, enable, rc, err):
         self.auth_rows[name].set_sensitive(True)
+        name_tr = _(name)
         if rc != 0:
             log.warning(f"PAM toggle failed for {name}: rc={rc} err={err!r}")
-            self.show_toast(f"Couldn't change “{name}” — authentication cancelled or failed")
+            self.show_toast(_("Couldn't change “{name}” — authentication cancelled or failed").format(name=name_tr))
         else:
-            self.show_toast(f"Fingerprint {'enabled' if enable else 'disabled'} for {name}")
+            state_str = _("enabled") if enable else _("disabled")
+            self.show_toast(_("Fingerprint {state} for {name}").format(state=state_str, name=name_tr))
         # Re-read the real state — it's authoritative and reverts the switch if needed.
         self._set_auth_switches(get_pam_auth_locations())
         return False
@@ -1406,18 +1509,18 @@ true''')
     # ========================================================================
 
     def build_maintenance_section(self, parent):
-        group = Adw.PreferencesGroup(title="Maintenance")
+        group = Adw.PreferencesGroup(title=_("Maintenance"))
         parent.append(group)
 
         # Update checker
         self.update_row = Adw.ActionRow(
-            title=f"Version: v{APP_VERSION}",
-            subtitle="Click to check for updates",
+            title=f"{_('Version:')} v{APP_VERSION}",
+            subtitle=_("Click to check for updates"),
         )
         self.update_row.add_prefix(Gtk.Image.new_from_icon_name("software-update-available-symbolic"))
         self.update_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
                                        valign=Gtk.Align.CENTER)
-        self.check_update_btn = Gtk.Button(label="Check for Updates")
+        self.check_update_btn = Gtk.Button(label=_("Check for Updates"))
         self.check_update_btn.connect("clicked", self.on_check_update)
         self.update_btn_box.append(self.check_update_btn)
         self.update_row.add_suffix(self.update_btn_box)
@@ -1425,11 +1528,11 @@ true''')
 
         # Rebuild driver
         rebuild_row = Adw.ActionRow(
-            title="Rebuild Driver",
-            subtitle="Run after system updates overwrite the patched library",
+            title=_("Rebuild Driver"),
+            subtitle=_("Run after system updates overwrite the patched library"),
         )
         rebuild_row.add_prefix(Gtk.Image.new_from_icon_name("system-software-install-symbolic"))
-        rebuild_btn = Gtk.Button(label="Rebuild", valign=Gtk.Align.CENTER)
+        rebuild_btn = Gtk.Button(label=_("Rebuild"), valign=Gtk.Align.CENTER)
         rebuild_btn.connect("clicked", self.on_rebuild_driver)
         rebuild_row.add_suffix(rebuild_btn)
         group.add(rebuild_row)
@@ -1437,12 +1540,12 @@ true''')
 
         # Uninstall
         uninstall_row = Adw.ActionRow(
-            title="Uninstall Everything",
-            subtitle="Remove driver, fingerprints, GUI, desktop shortcut, and project files",
+            title=_("Uninstall Everything"),
+            subtitle=_("Remove driver, fingerprints, GUI, desktop shortcut, and project files"),
         )
         uninstall_row.add_prefix(Gtk.Image.new_from_icon_name("user-trash-symbolic"))
         uninstall_btn = Gtk.Button(
-            label="Uninstall", css_classes=["destructive-action"],
+            label=_("Uninstall"), css_classes=["destructive-action"],
             valign=Gtk.Align.CENTER,
         )
         uninstall_btn.connect("clicked", self.on_uninstall)
@@ -1459,31 +1562,31 @@ true''')
 
         # Keyring
         keyring_row = Adw.ActionRow(
-            title="GNOME Keyring Auto-Unlock",
-            subtitle="Set empty keyring password for fingerprint login",
+            title=_("GNOME Keyring Auto-Unlock"),
+            subtitle=_("Set empty keyring password for fingerprint login"),
         )
         keyring_row.add_prefix(Gtk.Image.new_from_icon_name("channel-secure-symbolic"))
-        keyring_btn = Gtk.Button(label="Configure", valign=Gtk.Align.CENTER)
+        keyring_btn = Gtk.Button(label=_("Configure"), valign=Gtk.Align.CENTER)
         keyring_btn.connect("clicked", self.on_keyring)
         keyring_row.add_suffix(keyring_btn)
         group.add(keyring_row)
 
         # Log viewer
-        log_group = Adw.PreferencesGroup(title="Diagnostics",
-                                          description=f"Log: {LOG_FILE}")
+        log_group = Adw.PreferencesGroup(title=_("Diagnostics"),
+                                          description=f"{_('Log:')} {LOG_FILE}")
         parent.append(log_group)
 
         log_row = Adw.ActionRow(
-            title="Activity Log",
-            subtitle="View all events for troubleshooting",
+            title=_("Activity Log"),
+            subtitle=_("View all events for troubleshooting"),
         )
         log_row.add_prefix(Gtk.Image.new_from_icon_name("document-open-symbolic"))
         log_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
                               valign=Gtk.Align.CENTER)
-        view_log_btn = Gtk.Button(label="View Log")
+        view_log_btn = Gtk.Button(label=_("View Log"))
         view_log_btn.connect("clicked", self.on_view_log)
         log_btn_box.append(view_log_btn)
-        clear_log_btn = Gtk.Button(label="Clear Log", css_classes=["destructive-action"])
+        clear_log_btn = Gtk.Button(label=_("Clear Log"), css_classes=["destructive-action"])
         clear_log_btn.connect("clicked", self.on_clear_log)
         log_btn_box.append(clear_log_btn)
         log_row.add_suffix(log_btn_box)
@@ -1492,40 +1595,44 @@ true''')
     def on_rebuild_driver(self, btn):
         log.info("User clicked Rebuild Driver")
         btn.set_sensitive(False)
-        btn.set_label("Rebuilding...")
-        self.show_toast("Rebuilding driver — this may take a minute...")
+        btn.set_label(_("Rebuilding..."))
+        self.show_toast(_("Rebuilding driver — this may take a minute..."))
 
         def do_rebuild():
-            script = os.path.join(SCRIPT_DIR, "reinstall.sh")
+            script = get_reinstall_script()
+            if not script:
+                GLib.idle_add(self._maintenance_done, btn, _("Rebuild"), _("Failed: {err}").format(err="reinstall.sh not found"), False)
+                return
+
             rc, out, err = run_cmd(["pkexec", "bash", script], timeout=300)
             if rc == 0:
-                GLib.idle_add(self._maintenance_done, btn, "Rebuild", "Driver rebuilt!", True)
+                GLib.idle_add(self._maintenance_done, btn, _("Rebuild"), _("Driver rebuilt!"), True)
             else:
-                GLib.idle_add(self._maintenance_done, btn, "Rebuild", f"Failed: {err[:80]}", False)
+                GLib.idle_add(self._maintenance_done, btn, _("Rebuild"), _("Failed: {err}").format(err=err[:80]), False)
 
         threading.Thread(target=do_rebuild, daemon=True).start()
 
     def on_check_update(self, btn):
         log.info("User clicked Check for Updates")
         btn.set_sensitive(False)
-        btn.set_label("Checking...")
-        self.update_row.set_subtitle("Checking for updates...")
+        btn.set_label(_("Checking..."))
+        self.update_row.set_subtitle(_("Checking for updates..."))
 
         def do_check():
             # Fetch latest from remote
-            rc, _, err = run_cmd(["git", "-C", SCRIPT_DIR, "fetch", "origin"], timeout=30)
+            rc, out, err = run_cmd(["git", "-C", SCRIPT_DIR, "fetch", "origin"], timeout=30)
             if rc != 0:
-                GLib.idle_add(self._update_check_done, None, f"Fetch failed: {err[:60]}")
+                GLib.idle_add(self._update_check_done, None, _("Update failed: {err}").format(err=err[:60]))
                 return
 
             # Read remote VERSION
-            rc, remote_version, _ = run_cmd(
+            rc, remote_version, err = run_cmd(
                 ["git", "-C", SCRIPT_DIR, "show", "origin/main:VERSION"], timeout=5
             )
             remote_version = remote_version.strip() if rc == 0 else None
 
             # Get changelog diff
-            rc, changelog, _ = run_cmd(
+            rc, changelog, err = run_cmd(
                 ["git", "-C", SCRIPT_DIR, "log", f"HEAD..origin/main",
                  "--oneline", "--no-decorate"], timeout=5
             )
@@ -1536,31 +1643,30 @@ true''')
 
     def _update_check_done(self, remote_version, changelog):
         self.check_update_btn.set_sensitive(True)
-        self.check_update_btn.set_label("Check for Updates")
+        self.check_update_btn.set_label(_("Check for Updates"))
 
         if remote_version is None:
-            self.update_row.set_subtitle(f"v{APP_VERSION} — could not check remote")
-            self.show_toast(f"Update check failed: {changelog}")
+            self.update_row.set_subtitle(_("v{version} — could not check remote").format(version=APP_VERSION))
+            self.show_toast(_("Update check failed: {changelog}").format(changelog=changelog))
             return False
 
         if not changelog or remote_version == APP_VERSION:
-            self.update_row.set_subtitle(f"v{APP_VERSION} — up to date!")
+            self.update_row.set_subtitle(_("v{version} — up to date!").format(version=APP_VERSION))
             log.info(f"No updates available (local={APP_VERSION}, remote={remote_version})")
-            self.show_toast("You're on the latest version!")
+            self.show_toast(_("You're on the latest version!"))
             return False
 
         # Update available
         log.info(f"Update available: v{APP_VERSION} → v{remote_version}")
-        self.update_row.set_subtitle(f"v{APP_VERSION} → v{remote_version} available")
+        self.update_row.set_subtitle(_("v{version} → v{remote_version} available").format(version=APP_VERSION, remote_version=remote_version))
 
         # Show update dialog
         dialog = Adw.AlertDialog(
-            heading=f"Update available: v{remote_version}",
-            body=f"You have v{APP_VERSION}. Changes:\n\n{changelog}\n\n"
-                 "The GUI will restart after updating.",
+            heading=_("Update available: v{remote_version}").format(remote_version=remote_version),
+            body=_("You have v{version}. Changes:\n\n{changelog}\n\nThe GUI will restart after updating.").format(version=APP_VERSION, changelog=changelog),
         )
-        dialog.add_response("cancel", "Later")
-        dialog.add_response("update", "Update Now")
+        dialog.add_response("cancel", _("Later"))
+        dialog.add_response("update", _("Update Now"))
         dialog.set_response_appearance("update", Adw.ResponseAppearance.SUGGESTED)
         dialog.connect("response", self._on_update_confirmed, remote_version)
         dialog.present(self)
@@ -1572,7 +1678,7 @@ true''')
             return
 
         self.check_update_btn.set_sensitive(False)
-        self.update_row.set_subtitle("Updating...")
+        self.update_row.set_subtitle(_("Updating..."))
         log.info(f"Updating from v{APP_VERSION} to v{remote_version}")
 
         def do_update():
@@ -1584,7 +1690,7 @@ true''')
                 return
 
             # Check if driver-related files changed (need rebuild)
-            rc2, changed, _ = run_cmd(
+            rc2, changed, err2 = run_cmd(
                 ["git", "-C", SCRIPT_DIR, "diff", "--name-only", f"HEAD~1..HEAD"], timeout=5
             )
             needs_rebuild = any(f in changed for f in [
@@ -1594,8 +1700,8 @@ true''')
             log.info(f"Update pulled. Changed files: {changed}. Needs rebuild: {needs_rebuild}")
 
             def _restart():
-                self.update_row.set_subtitle(f"Updated to v{remote_version} — restarting...")
-                self.show_toast("Updated! Restarting GUI...")
+                self.update_row.set_subtitle(_("Updated to v{version} — restarting...").format(version=remote_version))
+                self.show_toast(_("Updated! Restarting GUI..."))
 
                 if needs_rebuild:
                     log.info("Driver files changed — prompting rebuild after restart")
@@ -1609,9 +1715,9 @@ true''')
 
     def _update_failed(self, err):
         self.check_update_btn.set_sensitive(True)
-        self.check_update_btn.set_label("Check for Updates")
-        self.update_row.set_subtitle(f"v{APP_VERSION} — update failed")
-        self.show_toast(f"Update failed: {err[:60]}")
+        self.check_update_btn.set_label(_("Check for Updates"))
+        self.update_row.set_subtitle(_("v{version} — update failed").format(version=APP_VERSION))
+        self.show_toast(_("Update failed: {err}").format(err=err[:60]))
         return False
 
     def _restart_gui(self):
@@ -1624,16 +1730,18 @@ true''')
     def on_uninstall(self, btn):
         log.info("User clicked Uninstall Everything")
         dialog = Adw.AlertDialog(
-            heading="Uninstall everything?",
-            body="This will completely remove:\n\n"
-                 "- Enrolled fingerprints\n"
-                 "- Patched CS9711 driver\n"
-                 "- GUI Manager and desktop shortcut\n"
-                 "- The entire project folder\n\n"
-                 "Stock libfprint will be restored. It will be as if this was never installed.",
+            heading=_("Uninstall everything?"),
+            body=_(
+                "This will completely remove:\n\n"
+                "- Enrolled fingerprints\n"
+                "- Patched CS9711 driver\n"
+                "- GUI Manager and desktop shortcut\n"
+                "- The entire project folder\n\n"
+                "Stock libfprint will be restored. It will be as if this was never installed."
+            ),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("uninstall", "Uninstall Everything")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("uninstall", _("Uninstall Everything"))
         dialog.set_response_appearance("uninstall", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", self._on_uninstall_confirmed)
         dialog.present(self)
@@ -1651,7 +1759,7 @@ true''')
         # Show uninstall progress bar
         self.uninstall_progress.set_visible(True)
         self.uninstall_progress.set_fraction(0)
-        self.uninstall_progress.set_text("Uninstalling... removing fingerprints")
+        self.uninstall_progress.set_text(_("Uninstalling... removing fingerprints"))
 
         def do_uninstall():
             def _update(fraction, text):
@@ -1659,7 +1767,7 @@ true''')
                 self.uninstall_progress.set_text(text)
                 return False
 
-            GLib.idle_add(_update, 0.1, "Step 1/5 — Removing fingerprints...")
+            GLib.idle_add(_update, 0.1, _("Step 1/5 — Removing fingerprints..."))
             log.info("Uninstall step 1/5: writing temp script")
 
             # Step 1: Write uninstall commands to a secure temp script
@@ -1695,7 +1803,7 @@ true''')
                     f.write(f"rm -rf {shlex.quote(os.path.join(project_dir, 'libfprint-CS9711', 'builddir'))} 2>/dev/null || true\n")
                 os.chmod(tmp_script, 0o700)
 
-                GLib.idle_add(_update, 0.3, "Step 2/5 — Removing driver (enter password)...")
+                GLib.idle_add(_update, 0.3, _("Step 2/5 — Removing driver (enter password)..."))
                 log.info("Uninstall step 2/5: running pkexec (password prompt expected)")
 
                 # Step 2: Run via pkexec
@@ -1712,16 +1820,16 @@ true''')
                 log.warning("Uninstall aborted — pkexec cancelled or failed")
                 def _aborted():
                     self.uninstall_progress.set_fraction(0)
-                    self.uninstall_progress.set_text("Uninstall cancelled — no changes made")
-                    self.show_toast("Uninstall cancelled")
+                    self.uninstall_progress.set_text(_("Uninstall cancelled — no changes made"))
+                    self.show_toast(_("Uninstall cancelled"))
                     return False
                 GLib.idle_add(_aborted)
                 return
 
-            GLib.idle_add(_update, 0.5, "Step 3/5 — Restoring stock driver...")
+            GLib.idle_add(_update, 0.5, _("Step 3/5 — Restoring stock driver..."))
             time.sleep(0.5)
 
-            GLib.idle_add(_update, 0.7, "Step 4/5 — Removing desktop shortcut...")
+            GLib.idle_add(_update, 0.7, _("Step 4/5 — Removing desktop shortcut..."))
 
             # Step 3: Remove desktop shortcut
             try:
@@ -1729,7 +1837,7 @@ true''')
             except FileNotFoundError:
                 pass
 
-            GLib.idle_add(_update, 0.9, "Step 5/5 — Removing project files...")
+            GLib.idle_add(_update, 0.9, _("Step 5/5 — Removing project files..."))
 
             # Step 4: Create cleanup script to delete project folder after GUI exits
             # Root-owned builddir/ was already removed in the pkexec step above
@@ -1746,8 +1854,8 @@ true''')
             subprocess.Popen([cleanup_script])
             def _done():
                 self.uninstall_progress.set_fraction(1.0)
-                self.uninstall_progress.set_text("Uninstall complete — closing in 3 seconds...")
-                self.show_toast("Uninstall complete — everything removed")
+                self.uninstall_progress.set_text(_("Uninstall complete — closing in 3 seconds..."))
+                self.show_toast(_("Uninstall complete — everything removed"))
                 GLib.timeout_add(3000, lambda: self.close() or False)
                 return False
             GLib.idle_add(_done)
@@ -1757,7 +1865,7 @@ true''')
     def on_keyring(self, btn):
         helper = os.path.join(SCRIPT_DIR, "helpers", "set-empty-keyring-password.py")
         if not os.path.exists(helper):
-            self.show_toast("Keyring helper not found")
+            self.show_toast(_("Keyring helper not found"))
             return
 
         # Needs a terminal for password input — try common terminal emulators
@@ -1774,10 +1882,10 @@ true''')
             term_bin = term[0]
             if subprocess.run(["which", term_bin], capture_output=True).returncode == 0:
                 subprocess.Popen(term + cmd)
-                self.show_toast(f"Keyring helper opened in {term_bin}")
+                self.show_toast(_("Keyring helper opened in {term_bin}").format(term_bin=term_bin))
                 return
         # Fallback: tell user to run manually
-        self.show_toast("No terminal found — run manually: python3 helpers/set-empty-keyring-password.py")
+        self.show_toast(_("No terminal found — run manually: python3 helpers/set-empty-keyring-password.py"))
 
     def on_about(self, btn):
         """Author credit, project links and licence.
@@ -1787,7 +1895,7 @@ true''')
         distributions rather than raising.
         """
         fields = dict(
-            application_name="CS9711 Fingerprint Manager",
+            application_name=_("CS9711 Fingerprint Manager"),
             application_icon=APP_ID,
             version=APP_VERSION,
             developer_name=APP_AUTHOR,
@@ -1797,7 +1905,7 @@ true''')
             website=PROJECT_URL,
             issue_url=f"{PROJECT_URL}/issues",
             copyright=f"© 2026 {APP_AUTHOR}",
-            comments=(
+            comments=_(
                 "Driver installer and manager for the Chipsailing CS9711 "
                 "fingerprint scanner (USB 2541:0236) on Linux.\n\n"
                 "This manager and the installer scripts are MIT licensed. The "
@@ -1806,9 +1914,9 @@ true''')
             ),
         )
         def links(d):
-            d.add_link("Developer on GitHub", AUTHOR_URL)
-            d.add_link("Report an issue", f"{PROJECT_URL}/issues")
-            d.add_link("Upstream driver", "https://github.com/archeYR/libfprint-CS9711")
+            d.add_link(_("Developer on GitHub"), AUTHOR_URL)
+            d.add_link(_("Report an issue"), f"{PROJECT_URL}/issues")
+            d.add_link(_("Upstream driver"), "https://github.com/archeYR/libfprint-CS9711")
 
         if hasattr(Adw, "AboutDialog"):
             dlg = Adw.AboutDialog(**fields)
@@ -1825,11 +1933,11 @@ true''')
             with open(LOG_FILE) as f:
                 content = f.read()
         except FileNotFoundError:
-            content = "(No log file yet)"
+            content = _("(No log file yet)")
 
         # Build a scrollable text window
         dialog = Adw.Dialog()
-        dialog.set_title("Activity Log")
+        dialog.set_title(_("Activity Log"))
         dialog.set_content_width(750)
         dialog.set_content_height(500)
 
@@ -1838,7 +1946,7 @@ true''')
 
         header = Adw.HeaderBar()
         # Copy to clipboard button
-        copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text="Copy log to clipboard")
+        copy_btn = Gtk.Button(icon_name="edit-copy-symbolic", tooltip_text=_("Copy log to clipboard"))
         header.pack_end(copy_btn)
         toolbar_view.add_top_bar(header)
 
@@ -1861,7 +1969,7 @@ true''')
         def _copy(*args):
             clipboard = self.get_clipboard()
             clipboard.set(content)
-            self.show_toast("Log copied to clipboard")
+            self.show_toast(_("Log copied to clipboard"))
         copy_btn.connect("clicked", _copy)
 
         dialog.present(self)
@@ -1883,7 +1991,7 @@ true''')
         ))
         log.addHandler(fh)
         log.info(f"=== Log cleared — CS9711 Fingerprint Manager v{APP_VERSION} ===")
-        self.show_toast("Log cleared")
+        self.show_toast(_("Log cleared"))
 
     def _maintenance_done(self, btn, label, message, success):
         btn.set_sensitive(True)
@@ -1919,7 +2027,7 @@ true''')
         threading.Thread(target=do_refresh, daemon=True).start()
 
     def _apply_refresh(self, scanner, driver, health, fingers, delay, max_tries, timeout, auth_locs):
-        friendly_fingers = [FINGER_NAMES.get(f, f) for f in fingers]
+        friendly_fingers = [get_finger_name(f) for f in fingers]
         broken = (not driver) and health[0] == "broken"
 
         # ---- hero card: headline states the ONE thing that matters ----
@@ -1932,37 +2040,35 @@ true''')
             # (usually an OpenCV 4 -> 5 bump). Rebuilding relinks against the
             # new version — do NOT chase USB/cable ghosts in this state.
             title, sub, icon = (
-                "Driver needs rebuilding",
-                f"Missing {health[1]} — a system library the driver was built "
-                "against was upgraded. Rebuild to relink against the new one.",
+                _("Driver needs rebuilding"),
+                _("Missing {lib} — a system library the driver was built against was upgraded. Rebuild to relink against the new one.").format(lib=health[1]),
                 warn_icon,
             )
         elif not scanner:
             title, sub, icon = (
-                "Scanner not detected",
-                "Check the USB connection. If it plugs into a keyboard hub, the "
-                "keyboard must be connected by cable, not wirelessly.",
+                _("Scanner not detected"),
+                _("Check the USB connection. If it plugs into a keyboard hub, the keyboard must be connected by cable, not wirelessly."),
                 warn_icon,
             )
         elif not driver:
             title, sub, icon = (
-                "Driver not installed",
-                "Run install.sh, or use Rebuild Driver below if it was working before.",
+                _("Driver not installed"),
+                _("Run install.sh, or use Rebuild Driver below if it was working before."),
                 warn_icon,
             )
         elif not fingers:
             title, sub, icon = (
-                "Ready to set up",
-                "Scanner and driver are working — enrol a finger to start using it.",
+                _("Ready to set up"),
+                _("Scanner and driver are working — enrol a finger to start using it."),
                 ok_icon,
             )
         else:
-            enabled = [n for n, on in auth_locs.items() if on]
-            title = "Fingerprint is ready"
+            enabled = [_(n) for n, on in auth_locs.items() if on]
+            title = _("Fingerprint is ready")
             sub = (
-                f"Active for {', '.join(enabled)}."
+                _("Active for {locations}.").format(locations=', '.join(enabled))
                 if enabled
-                else "Enrolled, but not switched on anywhere yet — see Where to Use Fingerprint."
+                else _("Enrolled, but not switched on anywhere yet — see Where to Use Fingerprint.")
             )
             icon = ok_icon
 
@@ -1975,19 +2081,19 @@ true''')
             "error" if broken or not scanner else ("warning" if not driver or not fingers else "success")
         )
 
-        set_pill(self.pill_scanner, "Scanner ✓" if scanner else "Scanner ✕",
+        set_pill(self.pill_scanner, _("Scanner ✓") if scanner else _("Scanner ✕"),
                  "ok" if scanner else "bad")
         set_pill(self.pill_driver,
-                 "Driver ✓" if driver else ("Driver broken" if broken else "Driver ✕"),
+                 _("Driver ✓") if driver else (_("Driver broken") if broken else _("Driver ✕")),
                  "ok" if driver else "bad")
         set_pill(self.pill_fingers,
-                 f"{len(fingers)} finger(s)" if fingers else "No fingers",
+                 _("{count} finger(s)").format(count=len(fingers)) if fingers else _("No fingers"),
                  "ok" if fingers else "idle")
 
         # Banner carries the actionable failure to the top of the window
         if broken:
             self.health_banner.set_title(
-                f"Driver cannot load — missing {health[1]} (system OpenCV upgrade?)"
+                _("Driver cannot load — missing {lib} (system OpenCV upgrade?)").format(lib=health[1])
             )
             self.health_banner.set_revealed(True)
         else:
@@ -1996,17 +2102,17 @@ true''')
         # Enrollment status banner + button label
         if fingers:
             self._has_enrolled_fingers = True
-            self.enroll_btn.set_label("Add Another Finger")
-            self.enroll_status_row.set_title("Enrolled")
+            self.enroll_btn.set_label(_("Add Another Finger"))
+            self.enroll_status_row.set_title(_("Enrolled"))
             self.enroll_status_row.set_subtitle(
-                f"{len(fingers)} finger(s): {', '.join(friendly_fingers)}"
+                _("{count} finger(s): {fingers}").format(count=len(fingers), fingers=', '.join(friendly_fingers))
             )
         else:
             self._has_enrolled_fingers = False
-            self.enroll_btn.set_label("Enroll")
-            self.enroll_status_row.set_title("Not Enrolled")
+            self.enroll_btn.set_label(_("Enroll"))
+            self.enroll_status_row.set_title(_("Not Enrolled"))
             self.enroll_status_row.set_subtitle(
-                "No fingerprints enrolled — click Enroll to get started"
+                _("No fingerprints enrolled — click Enroll to get started")
             )
 
         # Scan settings

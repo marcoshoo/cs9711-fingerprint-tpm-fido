@@ -1,11 +1,15 @@
 [Desktop Entry]
 Type=Application
 Name=CS9711 Fingerprint Manager
+Name[pt_BR]=Gerenciador de Impressão Digital CS9711
 GenericName=Fingerprint Manager
+GenericName[pt_BR]=Gerenciador de Biometria
 Comment=Configure Chipsailing CS9711 fingerprint scanner
+Comment[pt_BR]=Configurar leitor de impressão digital Chipsailing CS9711
 Exec=cs9711-manager
 Icon=cs9711-manager
 Terminal=false
 Categories=Settings;HardwareSettings;System;
-Keywords=fingerprint;scanner;cs9711;biometric;chipsailing;biometria;digital;
+Keywords=fingerprint;scanner;cs9711;biometric;chipsailing;biometria;digital;leitor;impressao;
+Keywords[pt_BR]=fingerprint;scanner;cs9711;biometric;chipsailing;biometria;digital;leitor;impressao;dedo;autenticacao;
 StartupNotify=true

@@ -116,6 +116,10 @@ fi
 info "[2/8] Instalando dependências do sistema via APT..."
 export DEBIAN_FRONTEND=noninteractive
 
+# Recuperar pacotes com pendências ou quebrados previamente no sistema
+dpkg --configure -a >/dev/null 2>&1 || true
+apt-get install -f -y -qq >/dev/null 2>&1 || true
+
 apt-get update -qq
 apt-get install -y -qq \
     build-essential git meson ninja-build golang golang-go pkg-config \
@@ -135,13 +139,19 @@ info "[3/8] Instalando driver libfprint customizado para CS9711..."
 LIB_DIR="/usr/local/lib/x86_64-linux-gnu"
 mkdir -p "$LIB_DIR"
 
-# Prioridade: Pacote local .deb pré-compilado, caso disponível
+# Prioridade: Pacote local .deb pré-compilado, caso compatível
 DEB_PACKAGE=$(ls "$SCRIPT_DIR/packages"/cs9711-fingerprint_*.deb 2>/dev/null | head -1 || true)
 DRIVER_INSTALLED=0
 
 if [ -n "$DEB_PACKAGE" ] && [ -f "$DEB_PACKAGE" ]; then
     info "Instalando pacote local $DEB_PACKAGE..."
-    dpkg -i "$DEB_PACKAGE" >/dev/null 2>&1 && DRIVER_INSTALLED=1 || true
+    if apt-get install -y --no-install-recommends "$DEB_PACKAGE" >/dev/null 2>&1; then
+        DRIVER_INSTALLED=1
+        ok "Pacote .deb instalado com sucesso."
+    else
+        warn "Instalação via .deb não pôde ser concluída. Limpando resíduos para compilar da fonte..."
+        dpkg -P cs9711-fingerprint >/dev/null 2>&1 || true
+    fi
 fi
 
 # Fallback: Compilação caso o .deb não esteja presente ou falhe
@@ -220,6 +230,8 @@ add_pam_rule() {
 add_pam_rule "/etc/pam.d/sudo"
 add_pam_rule "/etc/pam.d/sudo-i"
 add_pam_rule "/etc/pam.d/polkit-1"
+[ -f /etc/pam.d/gdm-password ] && add_pam_rule "/etc/pam.d/gdm-password"
+[ -f /etc/pam.d/gdm-fingerprint ] && add_pam_rule "/etc/pam.d/gdm-fingerprint"
 
 # Limpeza de pam_fprintd em common-auth para evitar duplicações
 for cf in /etc/pam.d/common-auth /etc/pam.d/common-auth-pc; do
@@ -283,14 +295,17 @@ if ! go build -o tpm-fido . >/dev/null 2>&1; then
 fi
 ok "Binário tpm-fido compilado com sucesso."
 
-# Instalar binário
-cp -a tpm-fido /usr/local/bin/tpm-fido
-chmod 755 /usr/local/bin/tpm-fido
+# Instalar binário (parar serviço/processo para evitar erro de 'Área de texto ocupada' / ETXTBSY)
+if [ -d "/run/user/$REAL_UID" ]; then
+    sudo -u "$REAL_USER" XDG_RUNTIME_DIR="/run/user/$REAL_UID" systemctl --user stop tpm-fido.service 2>/dev/null || true
+fi
+pkill -u "$REAL_USER" -x tpm-fido 2>/dev/null || true
+
+install -m 755 tpm-fido /usr/local/bin/tpm-fido
 
 # Manter link/cópia em ~/bin/tpm-fido para compatibilidade com configs existentes
 mkdir -p "$REAL_HOME/bin"
-cp -a tpm-fido "$REAL_HOME/bin/tpm-fido"
-chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/bin"
+install -m 755 -o "$REAL_USER" -g "$REAL_USER" tpm-fido "$REAL_HOME/bin/tpm-fido"
 
 rm -rf "$FIDO_BUILD_DIR"
 cd "$SCRIPT_DIR"
@@ -319,6 +334,10 @@ APP_SHARE="/usr/local/share/cs9711-manager"
 mkdir -p "$APP_SHARE"
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.py" "$APP_SHARE/cs9711-manager.py"
 chmod 755 "$APP_SHARE/cs9711-manager.py"
+cp -a "$SCRIPT_DIR/assets/translations.json" "$APP_SHARE/translations.json"
+chmod 644 "$APP_SHARE/translations.json"
+cp -a "$SCRIPT_DIR/reinstall.sh" "$APP_SHARE/reinstall.sh"
+chmod 755 "$APP_SHARE/reinstall.sh"
 
 # Criar wrapper em /usr/local/bin
 cat > /usr/local/bin/cs9711-manager <<'EOF'

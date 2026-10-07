@@ -152,7 +152,9 @@ fi
 
 # 6. Autenticação PAM
 echo -e "${BOLD}[6/8] Configuração PAM (sudo, polkit, gdm)${NC}"
-PAM_FILES=("/etc/pam.d/sudo" "/etc/pam.d/polkit-1" "/etc/pam.d/gdm-fingerprint")
+GDM_PAM="/etc/pam.d/gdm-password"
+[ -f /etc/pam.d/gdm-fingerprint ] && GDM_PAM="/etc/pam.d/gdm-fingerprint"
+PAM_FILES=("/etc/pam.d/sudo" "/etc/pam.d/polkit-1" "$GDM_PAM")
 for pf in "${PAM_FILES[@]}"; do
     if [ -f "$pf" ] && grep -q "pam_fprintd.so" "$pf"; then
         check_ok "Autenticação biométrica configurada em $pf"

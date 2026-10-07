@@ -90,10 +90,15 @@ ok "Atalhos e ícones removidos"
 
 # 6. Remover Driver customizado e restaurar fprintd
 info "Removendo driver customizado de /usr/local/lib..."
-rm -f /etc/ld.so.conf.d/99-cs9711-local.conf
+rm -f /etc/ld.so.conf.d/99-cs9711-local.conf /etc/ld.so.conf.d/00-cs9711-local.conf
 rm -f /usr/local/lib/x86_64-linux-gnu/libfprint-2.so*
 rm -f /usr/local/lib/libfprint-2.so*
 ldconfig 2>/dev/null || true
+
+if dpkg -s cs9711-fingerprint >/dev/null 2>&1; then
+    info "Removendo registro do pacote 'cs9711-fingerprint' do APT/dpkg..."
+    dpkg -P cs9711-fingerprint >/dev/null 2>&1 || true
+fi
 
 info "Reiniciando serviço fprintd..."
 systemctl restart fprintd 2>/dev/null || true

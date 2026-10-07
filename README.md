@@ -35,6 +35,7 @@ Desenvolvido e testado especificamente para **Ubuntu 26.04 LTS (Resolute)**.
 ```text
 install-fingerprint/
 ├── install.sh                     # Script mestre de instalação não-interativa
+├── reinstall.sh                   # Script de recompilação do driver com delay configurável
 ├── uninstall.sh                   # Script de rollback e desinstalação completa
 ├── verify.sh                      # Validador de saúde do sistema e hardware
 ├── patches/
@@ -49,6 +50,7 @@ install-fingerprint/
 │   ├── cs9711-manager.png         # Ícone 256x256 com fundo transparente
 │   ├── cs9711-manager.py          # Interface gráfica do gerenciador
 │   ├── cs9711-manager.desktop     # Atalho para o menu de aplicativos (XDG)
+│   ├── translations.json          # Dicionário de internacionalização e traduções (i18n)
 │   └── tpm-fido.service           # Template do serviço de usuário systemd
 ├── packages/
 │   └── cs9711-fingerprint_2.2.5_amd64.deb # Pacote base pré-compilado
