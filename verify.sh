@@ -177,12 +177,18 @@ for pf in "${PAM_FILES[@]}"; do
     fi
 done
 
-# 7. Proteção contra Atualizações do APT
-echo -e "${BOLD}[7/8] $(_t "Driver Protection against 'apt upgrade'" "Proteção do Driver contra 'apt upgrade'")${NC}"
+# 7. Proteção contra Atualizações do APT e Helpers
+echo -e "${BOLD}[7/8] $(_t "Driver Protection & Helpers" "Proteção do Driver e Helpers")${NC}"
 if [ -x /usr/local/bin/cs9711-update-guard ]; then
     check_ok "$(_t "Guard script installed (/usr/local/bin/cs9711-update-guard)" "Script de guarda instalado (/usr/local/bin/cs9711-update-guard)")"
 else
     check_warn "$(_t "Guard script /usr/local/bin/cs9711-update-guard missing or not executable" "Guarda /usr/local/bin/cs9711-update-guard ausente ou sem permissão de execução")"
+fi
+
+if [ -x /usr/local/bin/cs9711-check-is-remote ]; then
+    check_ok "$(_t "Remote session helper installed (/usr/local/bin/cs9711-check-is-remote)" "Helper de sessão remota instalado (/usr/local/bin/cs9711-check-is-remote)")"
+else
+    check_warn "$(_t "Remote session helper /usr/local/bin/cs9711-check-is-remote missing or not executable" "Helper de sessão remota /usr/local/bin/cs9711-check-is-remote ausente ou sem permissão de execução")"
 fi
 
 if [ -f /etc/apt/apt.conf.d/99-cs9711-guard ]; then

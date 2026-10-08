@@ -84,12 +84,13 @@ udevadm control --reload-rules 2>/dev/null || true
 udevadm trigger 2>/dev/null || true
 ok "$(_t "UDEV rules removed" "Regras UDEV removidas")"
 
-# 4. Remover APT Guard
-info "$(_t "Removing APT update guard..." "Removendo guarda de atualizações do APT...")"
+# 4. Remover APT Guard e Helpers
+info "$(_t "Removing APT update guard and helpers..." "Removendo guarda de atualizações do APT e helpers...")"
 rm -f /etc/apt/apt.conf.d/99-cs9711-guard
 rm -f /usr/local/bin/cs9711-update-guard
+rm -f /usr/local/bin/cs9711-check-is-remote
 rm -rf /var/lib/cs9711-fingerprint
-ok "$(_t "APT guard hook and cache removed" "Hook e cache do APT guard removidos")"
+ok "$(_t "APT guard hook, helpers and cache removed" "Hook do APT guard, helpers e cache removidos")"
 
 # 5. Remover GUI Manager e Atalhos Desktop
 info "$(_t "Removing GUI manager and desktop shortcuts..." "Removendo aplicativo gráfico e atalhos...")"

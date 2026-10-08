@@ -1,0 +1,45 @@
+#!/bin/bash
+# =============================================================================
+# CS9711 Session Detection Helper (Local vs Remote) for PAM / sudo
+# =============================================================================
+# Exit codes for PAM (pam_exec.so):
+#   exit 0 -> REMOTE session (Bypasses pam_fprintd and asks for password)
+#   exit 1 -> LOCAL session  (Runs pam_fprintd to request biometric touch)
+# =============================================================================
+
+# 1. Direct SSH environment variables check
+if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+    exit 0 # Remote (SSH)
+fi
+
+# 2. Identify target user (PAM defines $PAM_USER, sudo defines $SUDO_USER)
+ALVO_USER="${PAM_USER:-${SUDO_USER:-$USER}}"
+
+if [ -z "$ALVO_USER" ]; then
+    ALVO_USER=$(id -un 2>/dev/null || whoami)
+fi
+
+# 3. Locate real graphical user session ID (ignore 'manager' scopes)
+SESSAO_GRAFICA=""
+for id in $(loginctl list-sessions --no-legend 2>/dev/null | grep "$ALVO_USER" | awk '{print $1}'); do
+    classe=$(loginctl show-session "$id" --property=Class --value 2>/dev/null)
+    if [ "$classe" = "user" ]; then
+        SESSAO_GRAFICA="$id"
+        break
+    fi
+done
+
+# 4. Evaluate seat properties (Wayland / GNOME Remote Desktop)
+if [ -n "$SESSAO_GRAFICA" ]; then
+    SEAT=$(loginctl show-session "$SESSAO_GRAFICA" --property=Seat --value 2>/dev/null)
+    
+    # If no physical seat is attached (or Seat is empty), session is remote (RDP/VNC/Headless)
+    if [ -z "$SEAT" ]; then
+        exit 0 # Remote
+    else
+        exit 1 # Local (e.g. seat0)
+    fi
+fi
+
+# 5. Fallback if no mapped session is found: assume local
+exit 1

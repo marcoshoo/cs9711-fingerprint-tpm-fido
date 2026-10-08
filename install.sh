@@ -208,12 +208,14 @@ mkdir -p "$CACHE_DIR"
 cp -a "$LIB_DIR"/libfprint-2.so* "$CACHE_DIR"/ 2>/dev/null || true
 echo "$LIB_DIR" > "$CACHE_DIR/install-dir"
 
-# Instalar hook e script do Update Guard
+# Instalar hook e script do Update Guard e Remote Session Helper
 cp -a "$SCRIPT_DIR/helpers/cs9711-update-guard" /usr/local/bin/cs9711-update-guard
 chmod 755 /usr/local/bin/cs9711-update-guard
+cp -a "$SCRIPT_DIR/helpers/cs9711-check-is-remote" /usr/local/bin/cs9711-check-is-remote
+chmod 755 /usr/local/bin/cs9711-check-is-remote
 cp -a "$SCRIPT_DIR/helpers/99-cs9711-guard" /etc/apt/apt.conf.d/99-cs9711-guard
 
-ok "$(_t "CS9711 driver and APT Update Guard configured successfully." "Driver CS9711 e APT Update Guard configurados com sucesso.")"
+ok "$(_t "CS9711 driver, APT Update Guard and Remote Helper configured successfully." "Driver CS9711, APT Update Guard e Helper Remoto configurados com sucesso.")"
 
 # ----------------------------------------------------------------------------
 # 4. Configuração do PAM para Biometria
@@ -222,12 +224,14 @@ info "[4/8] $(_t "Configuring PAM for biometric authentication..." "Configurando
 
 MARK="# cs9711-managed"
 LINE="auth\tsufficient\tpam_fprintd.so\tmax-tries=7 timeout=30\t$MARK"
+SUDO_LINE="auth\t[success=1 default=ignore]\tpam_exec.so quiet /usr/local/bin/cs9711-check-is-remote\t$MARK\nauth\tsufficient\tpam_fprintd.so\tmax-tries=7 timeout=30\t$MARK"
 
 add_pam_rule() {
     local target="$1"
+    local rule_ins="${2:-$LINE}"
     [ -f "$target" ] || return 0
     grep -q "$MARK" "$target" && return 0
-    awk -v ins="$LINE" '
+    awk -v ins="$rule_ins" '
         { lines[NR]=$0
           if (!anchor && (($1=="@include" && $2 ~ /auth/) ||
                           ($1=="auth" && ($2=="include" || $2=="substack")))) anchor=NR
@@ -240,9 +244,9 @@ add_pam_rule() {
     chmod 644 "$target"
 }
 
-add_pam_rule "/etc/pam.d/sudo"
-add_pam_rule "/etc/pam.d/sudo-i"
-add_pam_rule "/etc/pam.d/polkit-1"
+add_pam_rule "/etc/pam.d/sudo" "$SUDO_LINE"
+add_pam_rule "/etc/pam.d/sudo-i" "$SUDO_LINE"
+add_pam_rule "/etc/pam.d/polkit-1" "$SUDO_LINE"
 [ -f /etc/pam.d/gdm-password ] && add_pam_rule "/etc/pam.d/gdm-password"
 [ -f /etc/pam.d/gdm-fingerprint ] && add_pam_rule "/etc/pam.d/gdm-fingerprint"
 
