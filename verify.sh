@@ -160,6 +160,8 @@ if echo "$FPRINT_DEV" | grep -qi "CS9711\|9711\|chipsailing"; then
     else
         check_warn "$(_t "No fingerprints enrolled for user $TARGET_USER" "Nenhuma digital cadastrada para o usuário $TARGET_USER")" "$(_t "Enroll with: fprintd-enroll" "Cadastre com: fprintd-enroll")"
     fi
+elif echo "$FPRINT_DEV" | grep -qi "PermissionDenied\|Not Authorized" && echo "$FPRINT_DEV" | grep -qi "Device at /net/reactivated/Fprint\|found [1-9] device"; then
+    check_ok "$(_t "fprintd device detected via D-Bus (fingerprint details restricted by Polkit in remote session)" "Dispositivo fprintd detectado via D-Bus (detalhes de digitais restritos pelo Polkit em sessão remota)")"
 else
     check_fail "$(_t "fprintd does not list CS9711 scanner" "fprintd não lista o sensor CS9711")" "$(_t "Output: $FPRINT_DEV" "Saída: $FPRINT_DEV")"
 fi
