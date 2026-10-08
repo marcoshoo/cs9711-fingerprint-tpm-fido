@@ -230,7 +230,10 @@ add_pam_rule() {
     local target="$1"
     local rule_ins="${2:-$LINE}"
     [ -f "$target" ] || return 0
-    grep -q "$MARK" "$target" && return 0
+    # Limpar regras anteriores gerenciadas por nós para garantir atualização
+    if grep -q "$MARK" "$target"; then
+        sed -i "/$MARK/d" "$target"
+    fi
     awk -v ins="$rule_ins" '
         { lines[NR]=$0
           if (!anchor && (($1=="@include" && $2 ~ /auth/) ||
