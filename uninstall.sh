@@ -63,7 +63,8 @@ rm -f "$REAL_HOME/.config/systemd/user/tpm-fido.service"
 if [ -d "/run/user/$REAL_UID" ]; then
     sudo -u "$REAL_USER" XDG_RUNTIME_DIR="/run/user/$REAL_UID" systemctl --user daemon-reload 2>/dev/null || true
 fi
-rm -f /usr/local/bin/tpm-fido "$REAL_HOME/bin/tpm-fido"
+rm -f /usr/local/bin/tpm-fido "$REAL_HOME/.local/bin/tpm-fido" "$REAL_HOME/bin/tpm-fido"
+rmdir "$REAL_HOME/bin" 2>/dev/null || true
 ok "$(_t "TPM-FIDO2 service and binaries removed" "Serviço e binários TPM-FIDO2 removidos")"
 
 # 2. Reverter configurações PAM

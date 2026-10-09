@@ -316,9 +316,23 @@ pkill -u "$REAL_USER" -x tpm-fido 2>/dev/null || true
 
 install -m 755 tpm-fido /usr/local/bin/tpm-fido
 
-# Manter link/cópia em ~/bin/tpm-fido para compatibilidade com configs existentes
-mkdir -p "$REAL_HOME/bin"
-install -m 755 -o "$REAL_USER" -g "$REAL_USER" tpm-fido "$REAL_HOME/bin/tpm-fido"
+# Instalar em ~/.local/bin/tpm-fido (Padrão XDG)
+mkdir -p "$REAL_HOME/.local/bin"
+install -m 755 -o "$REAL_USER" -g "$REAL_USER" tpm-fido "$REAL_HOME/.local/bin/tpm-fido"
+
+# Limpeza de binário legado em ~/bin se existir
+if [ -f "$REAL_HOME/bin/tpm-fido" ]; then
+    rm -f "$REAL_HOME/bin/tpm-fido"
+    rmdir "$REAL_HOME/bin" 2>/dev/null || true
+fi
+
+# Garantir ~/.local/bin no PATH via ~/.profile ou ~/.bashrc
+PROFILE_FILE="$REAL_HOME/.profile"
+[ -f "$PROFILE_FILE" ] || PROFILE_FILE="$REAL_HOME/.bashrc"
+if [ -f "$PROFILE_FILE" ] && ! grep -q '\.local/bin' "$PROFILE_FILE" 2>/dev/null; then
+    echo -e '\n# set PATH so it includes user private bin if it exists\nif [ -d "$HOME/.local/bin" ] ; then\n    PATH="$HOME/.local/bin:$PATH"\nfi' >> "$PROFILE_FILE"
+    chown "$REAL_USER:$REAL_USER" "$PROFILE_FILE"
+fi
 
 rm -rf "$FIDO_BUILD_DIR"
 cd "$SCRIPT_DIR"
