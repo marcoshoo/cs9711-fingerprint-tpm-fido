@@ -207,10 +207,10 @@ fi
 
 # 8. TPM-FIDO2 e Atalho Desktop
 echo -e "${BOLD}[8/8] $(_t "TPM-FIDO2 Service & Desktop Shortcut" "Serviço TPM-FIDO2 e Atalho Desktop")${NC}"
-if command -v tpm-fido >/dev/null 2>&1 || [ -x "$HOME/bin/tpm-fido" ] || [ -x "/usr/local/bin/tpm-fido" ]; then
+if command -v tpm-fido >/dev/null 2>&1 || [ -x "$HOME/.local/bin/tpm-fido" ] || [ -x "/usr/local/bin/tpm-fido" ] || [ -x "$HOME/bin/tpm-fido" ]; then
     check_ok "$(_t "'tpm-fido' binary installed on the system" "Binário 'tpm-fido' instalado no sistema")"
 else
-    check_fail "$(_t "'tpm-fido' binary not found in PATH, ~/bin or /usr/local/bin" "Binário 'tpm-fido' não encontrado em PATH, ~/bin ou /usr/local/bin")"
+    check_fail "$(_t "'tpm-fido' binary not found in PATH, ~/.local/bin or /usr/local/bin" "Binário 'tpm-fido' não encontrado em PATH, ~/.local/bin ou /usr/local/bin")"
 fi
 
 # Systemd user check
