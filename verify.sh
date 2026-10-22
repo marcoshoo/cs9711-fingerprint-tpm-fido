@@ -174,6 +174,13 @@ PAM_FILES=("/etc/pam.d/sudo" "/etc/pam.d/polkit-1" "$GDM_PAM")
 for pf in "${PAM_FILES[@]}"; do
     if [ -f "$pf" ] && grep -q "pam_fprintd.so" "$pf"; then
         check_ok "$(_t "Biometric authentication configured in $pf" "Autenticação biométrica configurada em $pf")"
+        if [[ "$pf" == *sudo* || "$pf" == *polkit* ]]; then
+            if grep -q "cs9711-check-is-remote" "$pf"; then
+                check_ok "$(_t "Remote session bypass configured in $pf" "Bypass de sessão remota configurado em $pf")"
+            else
+                check_warn "$(_t "Remote session bypass missing in $pf" "Bypass de sessão remota ausente em $pf")"
+            fi
+        fi
     else
         check_warn "$(_t "Biometrics not configured in $pf" "Biometria não configurada em $pf")"
     fi

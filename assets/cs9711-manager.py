@@ -186,7 +186,7 @@ SERVICE_PAM_FILES = {
         "xfce4-screensaver",     # XFCE
         "light-locker",          # LightDM lock helper
     ],
-    "sudo": ["sudo"],
+    "sudo": ["sudo", "sudo-i"],
     "polkit": ["polkit-1", "polkit-1-kde-1"],
 }
 
@@ -567,8 +567,14 @@ def pam_toggle_cmd(location, enable, max_tries=7, timeout=30):
     svc_list = " ".join(s for s in services if re.match(r"^[A-Za-z0-9._-]+$", s))
     fp_opts = f"max-tries={int(max_tries)} timeout={int(timeout)}"
     en = "1" if enable else "0"
-    # INS keeps literal \t; awk -v converts them to tabs when writing the line.
-    ins = f"auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
+    
+    # Preservar o desvio inteligente de sessões remotas para sudo e polkit
+    remote_helper = "/usr/local/bin/cs9711-check-is-remote"
+    if location in ("sudo", "polkit") and (os.path.isfile(remote_helper) or os.path.islink(remote_helper)):
+        bypass_line = f"auth\\t[success=1 default=ignore]\\tpam_exec.so quiet {remote_helper}\\t{PAM_MARK}\\n"
+        ins = f"{bypass_line}auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
+    else:
+        ins = f"auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
     return f'''set -u
 ETC={PAM_DIR}; VENDOR={VENDOR_PAM_DIR}; MARK="{PAM_MARK}"; ENABLE={en}
 INS="{ins}"

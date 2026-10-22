@@ -12,34 +12,53 @@ if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
     exit 0 # Remote (SSH)
 fi
 
-# 2. Identify target user (PAM defines $PAM_USER, sudo defines $SUDO_USER)
-ALVO_USER="${PAM_USER:-${SUDO_USER:-$USER}}"
+# 2. Identify the real user interacting with the system
+# In sudo/polkit, PAM_USER might be 'root', but SUDO_USER or PAM_RUSER is the real user
+ALVO_USER="${SUDO_USER:-${PAM_RUSER:-${PAM_USER:-$USER}}}"
 
-if [ -z "$ALVO_USER" ]; then
-    ALVO_USER=$(id -un 2>/dev/null || whoami)
+if [ -z "$ALVO_USER" ] || [ "$ALVO_USER" = "root" ]; then
+    # If user is root or unset, find the first active non-system desktop user
+    DESKTOP_USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '{if ($3 != "root" && $3 != "gdm-greeter" && $3 != "") print $3}' | head -n 1)
+    if [ -n "$DESKTOP_USER" ]; then
+        ALVO_USER="$DESKTOP_USER"
+    else
+        ALVO_USER=$(id -un 2>/dev/null || whoami)
+    fi
 fi
 
-# 3. Locate real graphical user session ID (ignore 'manager' scopes)
-SESSAO_GRAFICA=""
-for id in $(loginctl list-sessions --no-legend 2>/dev/null | grep "$ALVO_USER" | awk '{print $1}'); do
+# 3. Check active user sessions in loginctl
+IS_REMOTE=0
+HAS_USER_SESSION=0
+
+for id in $(loginctl list-sessions --no-legend 2>/dev/null | grep -w "$ALVO_USER" | awk '{print $1}'); do
     classe=$(loginctl show-session "$id" --property=Class --value 2>/dev/null)
-    if [ "$classe" = "user" ]; then
-        SESSAO_GRAFICA="$id"
+    [ "$classe" != "user" ] && continue
+
+    HAS_USER_SESSION=1
+    remote=$(loginctl show-session "$id" --property=Remote --value 2>/dev/null)
+    remote_host=$(loginctl show-session "$id" --property=RemoteHost --value 2>/dev/null)
+    seat=$(loginctl show-session "$id" --property=Seat --value 2>/dev/null)
+
+    # Remote GNOME session (RDP/VNC/Wayland headless) sets Remote=yes, has RemoteHost, or lacks physical Seat
+    if [ "$remote" = "yes" ] || [ -n "$remote_host" ] || [ -z "$seat" ]; then
+        IS_REMOTE=1
         break
     fi
 done
 
-# 4. Evaluate seat properties (Wayland / GNOME Remote Desktop)
-if [ -n "$SESSAO_GRAFICA" ]; then
-    SEAT=$(loginctl show-session "$SESSAO_GRAFICA" --property=Seat --value 2>/dev/null)
-    
-    # If no physical seat is attached (or Seat is empty), session is remote (RDP/VNC/Headless)
-    if [ -z "$SEAT" ]; then
-        exit 0 # Remote
-    else
-        exit 1 # Local (e.g. seat0)
-    fi
+if [ "$HAS_USER_SESSION" -eq 1 ] && [ "$IS_REMOTE" -eq 1 ]; then
+    exit 0 # Remote session detected
 fi
 
-# 5. Fallback if no mapped session is found: assume local
+# 4. Check for active GNOME Remote Desktop handover or headless daemons
+if pgrep -f "gnome-remote-desktop-daemon --handover" >/dev/null 2>&1; then
+    exit 0 # Remote (GNOME Remote Desktop active)
+fi
+
+# 5. If user session is local (e.g. seat0)
+if [ "$HAS_USER_SESSION" -eq 1 ] && [ "$IS_REMOTE" -eq 0 ]; then
+    exit 1 # Local physical session
+fi
+
+# 6. Fallback if no mapped session is found: assume local
 exit 1
