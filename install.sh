@@ -140,7 +140,7 @@ apt-get install -y -qq \
     libcairo2-dev libssl-dev libopencv-dev doctest-dev \
     gobject-introspection libgirepository1.0-dev \
     fprintd libpam-fprintd tpm-udev libtss2-dev \
-    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 >/dev/null
+    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-dbus >/dev/null
 
 ok "$(_t "Essential dependencies installed." "Dependências essenciais instaladas.")"
 
@@ -252,6 +252,12 @@ add_pam_rule "/etc/pam.d/sudo-i" "$SUDO_LINE"
 add_pam_rule "/etc/pam.d/polkit-1" "$SUDO_LINE"
 [ -f /etc/pam.d/gdm-password ] && add_pam_rule "/etc/pam.d/gdm-password"
 [ -f /etc/pam.d/gdm-fingerprint ] && add_pam_rule "/etc/pam.d/gdm-fingerprint"
+
+# Desativar pam_gnome_keyring em gdm-password para evitar que logins por senha (ex: RDP / sessões remotas)
+# re-encriptem o chaveiro configurado com senha em branco para biometria
+if [ -f /etc/pam.d/gdm-password ]; then
+    sed -i -E 's/^([[:space:]]*)(auth|session)([[:space:]]+.*pam_gnome_keyring\.so.*)/# \1\2\3 # cs9711-disabled/' /etc/pam.d/gdm-password
+fi
 
 # Limpeza de pam_fprintd em common-auth para evitar duplicações
 for cf in /etc/pam.d/common-auth /etc/pam.d/common-auth-pc; do
@@ -365,13 +371,15 @@ fi
 info "[7/8] $(_t "Installing GUI manager and 256x256 PNG icon..." "Instalando gerenciador gráfico e ícone PNG 256x256...")"
 
 APP_SHARE="/usr/local/share/cs9711-manager"
-mkdir -p "$APP_SHARE"
+mkdir -p "$APP_SHARE" "$APP_SHARE/helpers"
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.py" "$APP_SHARE/cs9711-manager.py"
 chmod 755 "$APP_SHARE/cs9711-manager.py"
 cp -a "$SCRIPT_DIR/assets/translations.json" "$APP_SHARE/translations.json"
 chmod 644 "$APP_SHARE/translations.json"
 cp -a "$SCRIPT_DIR/reinstall.sh" "$APP_SHARE/reinstall.sh"
 chmod 755 "$APP_SHARE/reinstall.sh"
+cp -a "$SCRIPT_DIR/helpers/set-empty-keyring-password.py" "$APP_SHARE/helpers/set-empty-keyring-password.py"
+chmod 755 "$APP_SHARE/helpers/set-empty-keyring-password.py"
 
 # Criar wrapper em /usr/local/bin
 cat > /usr/local/bin/cs9711-manager <<'EOF'
@@ -383,18 +391,19 @@ chmod 755 /usr/local/bin/cs9711-manager
 # Instalar ícone PNG transparente 256x256 nos diretórios padrão do sistema
 mkdir -p /usr/share/icons/hicolor/256x256/apps /usr/share/pixmaps
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.png" /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png
+ln -sf /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png /usr/share/icons/hicolor/256x256/apps/com.github.mmhfarooque.cs9711-manager.png
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.png" /usr/share/pixmaps/cs9711-manager.png
+ln -sf /usr/share/pixmaps/cs9711-manager.png /usr/share/pixmaps/com.github.mmhfarooque.cs9711-manager.png
 gtk-update-icon-cache -f -q /usr/share/icons/hicolor 2>/dev/null || true
 
-# Instalar atalho Desktop global
+# Instalar atalho Desktop global (apenas um .desktop para evitar duplicatas no menu)
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.desktop" /usr/share/applications/cs9711-manager.desktop
 chmod 644 /usr/share/applications/cs9711-manager.desktop
-
-# Substituir versão local com caminhos absolutos, se existir
-if [ -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop" ]; then
-    cp -a "$SCRIPT_DIR/assets/cs9711-manager.desktop" "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-    chown "$REAL_USER:$REAL_USER" "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-fi
+rm -f /usr/share/applications/com.github.mmhfarooque.cs9711-manager.desktop 2>/dev/null || true
+rm -f "$REAL_HOME/.local/share/applications/com.github.mmhfarooque.cs9711-manager.desktop" 2>/dev/null || true
+rm -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop" 2>/dev/null || true
+update-desktop-database /usr/share/applications 2>/dev/null || true
+update-desktop-database "$REAL_HOME/.local/share/applications" 2>/dev/null || true
 
 ok "$(_t "Application shortcut and high-resolution icon registered in system." "Atalho e ícone de alta resolução registrados no sistema.")"
 

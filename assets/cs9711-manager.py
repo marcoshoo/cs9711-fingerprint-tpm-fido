@@ -1869,8 +1869,14 @@ true''')
         threading.Thread(target=do_uninstall, daemon=True).start()
 
     def on_keyring(self, btn):
-        helper = os.path.join(SCRIPT_DIR, "helpers", "set-empty-keyring-password.py")
-        if not os.path.exists(helper):
+        candidate_paths = [
+            os.path.join(SCRIPT_DIR, "helpers", "set-empty-keyring-password.py"),
+            os.path.join(os.path.dirname(SCRIPT_DIR), "helpers", "set-empty-keyring-password.py"),
+            "/usr/local/share/cs9711-manager/helpers/set-empty-keyring-password.py",
+            "/usr/local/bin/set-empty-keyring-password.py",
+        ]
+        helper = next((p for p in candidate_paths if os.path.exists(p)), None)
+        if not helper:
             self.show_toast(_("Keyring helper not found"))
             return
 
@@ -1902,7 +1908,7 @@ true''')
         """
         fields = dict(
             application_name=_("CS9711 Fingerprint Manager"),
-            application_icon=APP_ID,
+            application_icon="cs9711-manager",
             version=APP_VERSION,
             developer_name=APP_AUTHOR,
             # libadwaita renders "Name <mail>" as a mailto link in the credits

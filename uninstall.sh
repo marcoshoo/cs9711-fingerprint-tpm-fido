@@ -75,6 +75,10 @@ for f in /etc/pam.d/*; do
         sed -i '/# cs9711-managed/d' "$f"
         ok "$(_t "Rules removed from $f" "Regras removidas de $f")"
     fi
+    if grep -q "# cs9711-disabled" "$f"; then
+        sed -i -E 's/^# ([[:space:]]*)(auth|session)([[:space:]]+.*pam_gnome_keyring\.so.*) # cs9711-disabled/\1\2\3/' "$f"
+        ok "$(_t "Keyring PAM rules restored in $f" "Regras de chaveiro no PAM restauradas em $f")"
+    fi
 done
 
 # 3. Remover regras UDEV e módulos
@@ -97,11 +101,12 @@ ok "$(_t "APT guard hook, helpers and cache removed" "Hook do APT guard, helpers
 info "$(_t "Removing GUI manager and desktop shortcuts..." "Removendo aplicativo gráfico e atalhos...")"
 rm -f /usr/local/bin/cs9711-manager
 rm -rf /usr/local/share/cs9711-manager
-rm -f /usr/share/applications/cs9711-manager.desktop
+rm -f /usr/share/applications/cs9711-manager.desktop /usr/share/applications/com.github.mmhfarooque.cs9711-manager.desktop
 rm -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-rm -f /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png
-rm -f /usr/share/pixmaps/cs9711-manager.png
+rm -f /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png /usr/share/icons/hicolor/256x256/apps/com.github.mmhfarooque.cs9711-manager.png
+rm -f /usr/share/pixmaps/cs9711-manager.png /usr/share/pixmaps/com.github.mmhfarooque.cs9711-manager.png
 gtk-update-icon-cache -f -q /usr/share/icons/hicolor 2>/dev/null || true
+update-desktop-database /usr/share/applications 2>/dev/null || true
 ok "$(_t "Shortcuts and icons removed" "Atalhos e ícones removidos")"
 
 # 6. Remover Driver customizado e restaurar fprintd
