@@ -419,6 +419,34 @@ def get_retry_delay():
     return 1500
 
 
+def get_enroll_stages():
+    """Read configured enroll stages from system or driver source."""
+    stages_file = "/var/lib/cs9711-fingerprint/enroll_stages"
+    if os.path.exists(stages_file):
+        try:
+            with open(stages_file) as f:
+                val = int(f.read().strip())
+                if val > 0:
+                    return val
+        except Exception:
+            pass
+    src_candidates = [
+        CS9711_SRC,
+        "/var/lib/cs9711-fingerprint/src/libfprint/drivers/cs9711/cs9711.c",
+    ]
+    for src in src_candidates:
+        if os.path.exists(src):
+            try:
+                with open(src) as f:
+                    for line in f:
+                        m = re.search(r"nr_enroll_stages\s*=\s*(\d+)", line)
+                        if m:
+                            return int(m.group(1))
+            except Exception:
+                pass
+    return 20
+
+
 def get_reinstall_script():
     """Find reinstall.sh across local or installed directories."""
     candidates = [
@@ -780,16 +808,17 @@ class CS9711Window(Adw.ApplicationWindow):
         """Show enrollment prompt if no fingers enrolled."""
         log.info("First launch check: no fingers enrolled, scanner connected — showing welcome dialog")
         if not self._has_enrolled_fingers and is_scanner_connected():
+            stages = get_enroll_stages()
             dialog = Adw.AlertDialog(
                 heading=_("Welcome! Let's set up your fingerprint"),
                 body=_(
                     "Your CS9711 scanner is connected and the driver is installed.\n\n"
                     "To start using fingerprint login, you need to enroll a finger. "
-                    "This takes 15 touches on the scanner.\n\n"
+                    "This takes {stages} touches on the scanner.\n\n"
                     "By default, your RIGHT INDEX FINGER will be enrolled. "
                     "If you're left-handed, you can change the finger in the dropdown below the Enroll button.\n\n"
                     "Click 'Start Enrollment' to begin — then place your finger on the scanner when prompted."
-                ),
+                ).format(stages=stages),
             )
             dialog.add_response("later", _("Later"))
             dialog.add_response("enroll", _("Start Enrollment"))
@@ -888,8 +917,9 @@ class CS9711Window(Adw.ApplicationWindow):
     # ========================================================================
 
     def build_enrollment_section(self, parent):
+        stages = get_enroll_stages()
         group = Adw.PreferencesGroup(title=_("Fingerprint Enrollment"),
-                                     description=_("15 touches required per finger"))
+                                     description=_("{stages} touches required per finger").format(stages=stages))
         parent.append(group)
 
         # Enrollment status banner
@@ -998,6 +1028,7 @@ class CS9711Window(Adw.ApplicationWindow):
                     ["fprintd-enroll", "-f", finger_id],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                 )
+                stages = get_enroll_stages()
                 touch_count = 0
                 for line in self._enroll_process.stdout:
                     if self._enroll_cancel:
@@ -1008,12 +1039,12 @@ class CS9711Window(Adw.ApplicationWindow):
                     low = line.lower()
                     if "enroll-stage-passed" in low or "stage passed" in low:
                         touch_count += 1
-                        log.info(f"Enroll touch {touch_count}/15 accepted")
-                        frac = min(touch_count / 15.0, 1.0)
+                        log.info(f"Enroll touch {touch_count}/{stages} accepted")
+                        frac = min(touch_count / float(stages), 1.0)
                         GLib.idle_add(
                             self._enroll_update,
                             frac,
-                            _("Touch {count}/15 — good, keep going!").format(count=touch_count),
+                            _("Touch {count}/{stages} — good, keep going!").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-completed" in low:
                         GLib.idle_add(self._enroll_done, _("Enrollment complete!"), True)
@@ -1021,26 +1052,26 @@ class CS9711Window(Adw.ApplicationWindow):
                     elif "enroll-retry-scan" in low or "retry" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — bad read, try again").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — bad read, try again").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-swipe-too-short" in low or "too short" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — too short, hold longer").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — too short, hold longer").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-finger-not-centered" in low or "not centered" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — center your finger").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — center your finger").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-remove-and-retry" in low or "remove" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — lift and touch again").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — lift and touch again").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-failed" in low or "enroll-unknown-error" in low:
                         GLib.idle_add(self._enroll_done, _("Enrollment failed — try again"), False)
@@ -1073,16 +1104,17 @@ class CS9711Window(Adw.ApplicationWindow):
         self.cancel_enroll_btn.set_visible(False)
         self._enroll_process = None
         if success:
-            self.enroll_progress.set_text(_("All 15 touches done! Enrollment saved."))
+            stages = get_enroll_stages()
+            self.enroll_progress.set_text(_("All {stages} touches done! Enrollment saved.").format(stages=stages))
             self.refresh_all()
             # Ask user if they want to verify
             dialog = Adw.AlertDialog(
                 heading=_("Enrollment complete!"),
                 body=_(
-                    "All 15 touches recorded successfully.\n\n"
+                    "All {stages} touches recorded successfully.\n\n"
                     "Would you like to do a quick verification touch to confirm "
                     "your fingerprint is working?"
-                ),
+                ).format(stages=stages),
             )
             dialog.add_response("skip", _("Skip"))
             dialog.add_response("verify", _("Verify Now"))

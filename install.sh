@@ -44,18 +44,26 @@ fail() { echo -e "  [${RED}✗ $(_t "ERROR" "ERRO")${NC}] $1"; exit 1; }
 
 # Parse flags
 SILENT_MODE=1
+ENROLL_STAGES="${ENROLL_STAGES:-20}"
 
-for arg in "$@"; do
-    case "$arg" in
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         -h|--help)
             echo "$(_t "Usage: sudo ./install.sh [OPTIONS]" "Uso: sudo ./install.sh [OPÇÕES]")"
             echo ""
             echo "$(_t "Options:" "Opções:")"
             echo "$(_t "  -y, --silent     Non-interactive silent execution (default)" "  -y, --silent     Execução não-interativa e silenciosa (padrão)")"
+            echo "$(_t "  --stages N       Number of enroll touches (default: 20)" "  --stages N       Número de toques no cadastro (padrão: 20)")"
             echo "$(_t "  --verify         Run post-install diagnostics (verify.sh)" "  --verify         Executa o diagnóstico pós-instalação (verify.sh)")"
             echo "$(_t "  --uninstall      Remove and rollback all changes (uninstall.sh)" "  --uninstall      Remove e reverte todas as modificações (uninstall.sh)")"
             echo "$(_t "  -h, --help       Show this help message" "  -h, --help       Mostra esta mensagem de ajuda")"
             exit 0
+            ;;
+        --stages)
+            shift
+            if [ -n "${1:-}" ]; then
+                ENROLL_STAGES="$1"
+            fi
             ;;
         --verify)
             exec "$SCRIPT_DIR/verify.sh"
@@ -67,6 +75,7 @@ for arg in "$@"; do
             SILENT_MODE=1
             ;;
     esac
+    shift || true
 done
 
 # Checar privilégios de root
@@ -174,10 +183,11 @@ if [ "$DRIVER_INSTALLED" -eq 0 ]; then
     rm -rf "$BUILD_DIR"
     git clone --depth 1 https://github.com/archeYR/libfprint-CS9711.git "$BUILD_DIR" >/dev/null 2>&1
     
-    # Patch de retry delay
+    # Patch de retry delay e etapas de cadastro (amostras)
     CS_SRC="$BUILD_DIR/libfprint/drivers/cs9711/cs9711.c"
     if [ -f "$CS_SRC" ]; then
         sed -i 's/#define CS9711_DEFAULT_RESET_SLEEP.*/#define CS9711_DEFAULT_RESET_SLEEP  1500/' "$CS_SRC"
+        sed -i "s/dev_class->nr_enroll_stages = .*/dev_class->nr_enroll_stages = $ENROLL_STAGES;/" "$CS_SRC"
     fi
     
     # Ajustes meson
@@ -205,6 +215,7 @@ ldconfig
 # Cache do driver para restauração automática após upgrades do APT
 CACHE_DIR="/var/lib/cs9711-fingerprint"
 mkdir -p "$CACHE_DIR"
+echo "$ENROLL_STAGES" > "$CACHE_DIR/enroll_stages"
 cp -a "$LIB_DIR"/libfprint-2.so* "$CACHE_DIR"/ 2>/dev/null || true
 echo "$LIB_DIR" > "$CACHE_DIR/install-dir"
 
