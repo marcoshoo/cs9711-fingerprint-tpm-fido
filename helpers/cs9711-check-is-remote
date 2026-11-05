@@ -1,0 +1,64 @@
+#!/bin/bash
+# =============================================================================
+# CS9711 Session Detection Helper (Local vs Remote) for PAM / sudo
+# =============================================================================
+# Exit codes for PAM (pam_exec.so):
+#   exit 0 -> REMOTE session (Bypasses pam_fprintd and asks for password)
+#   exit 1 -> LOCAL session  (Runs pam_fprintd to request biometric touch)
+# =============================================================================
+
+# 1. Direct SSH environment variables check
+if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ] || [ -n "$SSH_CONNECTION" ]; then
+    exit 0 # Remote (SSH)
+fi
+
+# 2. Identify the real user interacting with the system
+# In sudo/polkit, PAM_USER might be 'root', but SUDO_USER or PAM_RUSER is the real user
+ALVO_USER="${SUDO_USER:-${PAM_RUSER:-${PAM_USER:-$USER}}}"
+
+if [ -z "$ALVO_USER" ] || [ "$ALVO_USER" = "root" ]; then
+    # If user is root or unset, find the first active non-system desktop user
+    DESKTOP_USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '{if ($3 != "root" && $3 != "gdm-greeter" && $3 != "") print $3}' | head -n 1)
+    if [ -n "$DESKTOP_USER" ]; then
+        ALVO_USER="$DESKTOP_USER"
+    else
+        ALVO_USER=$(id -un 2>/dev/null || whoami)
+    fi
+fi
+
+# 3. Check active user sessions in loginctl
+IS_REMOTE=0
+HAS_USER_SESSION=0
+
+for id in $(loginctl list-sessions --no-legend 2>/dev/null | grep -w "$ALVO_USER" | awk '{print $1}'); do
+    classe=$(loginctl show-session "$id" --property=Class --value 2>/dev/null)
+    [ "$classe" != "user" ] && continue
+
+    HAS_USER_SESSION=1
+    remote=$(loginctl show-session "$id" --property=Remote --value 2>/dev/null)
+    remote_host=$(loginctl show-session "$id" --property=RemoteHost --value 2>/dev/null)
+    seat=$(loginctl show-session "$id" --property=Seat --value 2>/dev/null)
+
+    # Remote GNOME session (RDP/VNC/Wayland headless) sets Remote=yes, has RemoteHost, or lacks physical Seat
+    if [ "$remote" = "yes" ] || [ -n "$remote_host" ] || [ -z "$seat" ]; then
+        IS_REMOTE=1
+        break
+    fi
+done
+
+if [ "$HAS_USER_SESSION" -eq 1 ] && [ "$IS_REMOTE" -eq 1 ]; then
+    exit 0 # Remote session detected
+fi
+
+# 4. Check for active GNOME Remote Desktop handover or headless daemons
+if pgrep -f "gnome-remote-desktop-daemon --handover" >/dev/null 2>&1; then
+    exit 0 # Remote (GNOME Remote Desktop active)
+fi
+
+# 5. If user session is local (e.g. seat0)
+if [ "$HAS_USER_SESSION" -eq 1 ] && [ "$IS_REMOTE" -eq 0 ]; then
+    exit 1 # Local physical session
+fi
+
+# 6. Fallback if no mapped session is found: assume local
+exit 1

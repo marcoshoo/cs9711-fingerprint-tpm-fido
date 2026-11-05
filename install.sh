@@ -44,18 +44,26 @@ fail() { echo -e "  [${RED}✗ $(_t "ERROR" "ERRO")${NC}] $1"; exit 1; }
 
 # Parse flags
 SILENT_MODE=1
+ENROLL_STAGES="${ENROLL_STAGES:-20}"
 
-for arg in "$@"; do
-    case "$arg" in
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         -h|--help)
             echo "$(_t "Usage: sudo ./install.sh [OPTIONS]" "Uso: sudo ./install.sh [OPÇÕES]")"
             echo ""
             echo "$(_t "Options:" "Opções:")"
             echo "$(_t "  -y, --silent     Non-interactive silent execution (default)" "  -y, --silent     Execução não-interativa e silenciosa (padrão)")"
+            echo "$(_t "  --stages N       Number of enroll touches (default: 20)" "  --stages N       Número de toques no cadastro (padrão: 20)")"
             echo "$(_t "  --verify         Run post-install diagnostics (verify.sh)" "  --verify         Executa o diagnóstico pós-instalação (verify.sh)")"
             echo "$(_t "  --uninstall      Remove and rollback all changes (uninstall.sh)" "  --uninstall      Remove e reverte todas as modificações (uninstall.sh)")"
             echo "$(_t "  -h, --help       Show this help message" "  -h, --help       Mostra esta mensagem de ajuda")"
             exit 0
+            ;;
+        --stages)
+            shift
+            if [ -n "${1:-}" ]; then
+                ENROLL_STAGES="$1"
+            fi
             ;;
         --verify)
             exec "$SCRIPT_DIR/verify.sh"
@@ -67,6 +75,7 @@ for arg in "$@"; do
             SILENT_MODE=1
             ;;
     esac
+    shift || true
 done
 
 # Checar privilégios de root
@@ -140,7 +149,7 @@ apt-get install -y -qq \
     libcairo2-dev libssl-dev libopencv-dev doctest-dev \
     gobject-introspection libgirepository1.0-dev \
     fprintd libpam-fprintd tpm-udev libtss2-dev \
-    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 >/dev/null
+    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-dbus >/dev/null
 
 ok "$(_t "Essential dependencies installed." "Dependências essenciais instaladas.")"
 
@@ -174,10 +183,11 @@ if [ "$DRIVER_INSTALLED" -eq 0 ]; then
     rm -rf "$BUILD_DIR"
     git clone --depth 1 https://github.com/archeYR/libfprint-CS9711.git "$BUILD_DIR" >/dev/null 2>&1
     
-    # Patch de retry delay
+    # Patch de retry delay e etapas de cadastro (amostras)
     CS_SRC="$BUILD_DIR/libfprint/drivers/cs9711/cs9711.c"
     if [ -f "$CS_SRC" ]; then
         sed -i 's/#define CS9711_DEFAULT_RESET_SLEEP.*/#define CS9711_DEFAULT_RESET_SLEEP  1500/' "$CS_SRC"
+        sed -i "s/dev_class->nr_enroll_stages = .*/dev_class->nr_enroll_stages = $ENROLL_STAGES;/" "$CS_SRC"
     fi
     
     # Ajustes meson
@@ -205,15 +215,18 @@ ldconfig
 # Cache do driver para restauração automática após upgrades do APT
 CACHE_DIR="/var/lib/cs9711-fingerprint"
 mkdir -p "$CACHE_DIR"
+echo "$ENROLL_STAGES" > "$CACHE_DIR/enroll_stages"
 cp -a "$LIB_DIR"/libfprint-2.so* "$CACHE_DIR"/ 2>/dev/null || true
 echo "$LIB_DIR" > "$CACHE_DIR/install-dir"
 
-# Instalar hook e script do Update Guard
+# Instalar hook e script do Update Guard e Remote Session Helper
 cp -a "$SCRIPT_DIR/helpers/cs9711-update-guard" /usr/local/bin/cs9711-update-guard
 chmod 755 /usr/local/bin/cs9711-update-guard
+cp -a "$SCRIPT_DIR/helpers/cs9711-check-is-remote" /usr/local/bin/cs9711-check-is-remote
+chmod 755 /usr/local/bin/cs9711-check-is-remote
 cp -a "$SCRIPT_DIR/helpers/99-cs9711-guard" /etc/apt/apt.conf.d/99-cs9711-guard
 
-ok "$(_t "CS9711 driver and APT Update Guard configured successfully." "Driver CS9711 e APT Update Guard configurados com sucesso.")"
+ok "$(_t "CS9711 driver, APT Update Guard and Remote Helper configured successfully." "Driver CS9711, APT Update Guard e Helper Remoto configurados com sucesso.")"
 
 # ----------------------------------------------------------------------------
 # 4. Configuração do PAM para Biometria
@@ -222,12 +235,17 @@ info "[4/8] $(_t "Configuring PAM for biometric authentication..." "Configurando
 
 MARK="# cs9711-managed"
 LINE="auth\tsufficient\tpam_fprintd.so\tmax-tries=7 timeout=30\t$MARK"
+SUDO_LINE="auth\t[success=1 default=ignore]\tpam_exec.so quiet /usr/local/bin/cs9711-check-is-remote\t$MARK\nauth\tsufficient\tpam_fprintd.so\tmax-tries=7 timeout=30\t$MARK"
 
 add_pam_rule() {
     local target="$1"
+    local rule_ins="${2:-$LINE}"
     [ -f "$target" ] || return 0
-    grep -q "$MARK" "$target" && return 0
-    awk -v ins="$LINE" '
+    # Limpar regras anteriores gerenciadas por nós para garantir atualização
+    if grep -q "$MARK" "$target"; then
+        sed -i "/$MARK/d" "$target"
+    fi
+    awk -v ins="$rule_ins" '
         { lines[NR]=$0
           if (!anchor && (($1=="@include" && $2 ~ /auth/) ||
                           ($1=="auth" && ($2=="include" || $2=="substack")))) anchor=NR
@@ -240,11 +258,17 @@ add_pam_rule() {
     chmod 644 "$target"
 }
 
-add_pam_rule "/etc/pam.d/sudo"
-add_pam_rule "/etc/pam.d/sudo-i"
-add_pam_rule "/etc/pam.d/polkit-1"
+add_pam_rule "/etc/pam.d/sudo" "$SUDO_LINE"
+add_pam_rule "/etc/pam.d/sudo-i" "$SUDO_LINE"
+add_pam_rule "/etc/pam.d/polkit-1" "$SUDO_LINE"
 [ -f /etc/pam.d/gdm-password ] && add_pam_rule "/etc/pam.d/gdm-password"
 [ -f /etc/pam.d/gdm-fingerprint ] && add_pam_rule "/etc/pam.d/gdm-fingerprint"
+
+# Desativar pam_gnome_keyring em gdm-password para evitar que logins por senha (ex: RDP / sessões remotas)
+# re-encriptem o chaveiro configurado com senha em branco para biometria
+if [ -f /etc/pam.d/gdm-password ]; then
+    sed -i -E 's/^([[:space:]]*)(auth|session)([[:space:]]+.*pam_gnome_keyring\.so.*)/# \1\2\3 # cs9711-disabled/' /etc/pam.d/gdm-password
+fi
 
 # Limpeza de pam_fprintd em common-auth para evitar duplicações
 for cf in /etc/pam.d/common-auth /etc/pam.d/common-auth-pc; do
@@ -358,13 +382,15 @@ fi
 info "[7/8] $(_t "Installing GUI manager and 256x256 PNG icon..." "Instalando gerenciador gráfico e ícone PNG 256x256...")"
 
 APP_SHARE="/usr/local/share/cs9711-manager"
-mkdir -p "$APP_SHARE"
+mkdir -p "$APP_SHARE" "$APP_SHARE/helpers"
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.py" "$APP_SHARE/cs9711-manager.py"
 chmod 755 "$APP_SHARE/cs9711-manager.py"
 cp -a "$SCRIPT_DIR/assets/translations.json" "$APP_SHARE/translations.json"
 chmod 644 "$APP_SHARE/translations.json"
 cp -a "$SCRIPT_DIR/reinstall.sh" "$APP_SHARE/reinstall.sh"
 chmod 755 "$APP_SHARE/reinstall.sh"
+cp -a "$SCRIPT_DIR/helpers/set-empty-keyring-password.py" "$APP_SHARE/helpers/set-empty-keyring-password.py"
+chmod 755 "$APP_SHARE/helpers/set-empty-keyring-password.py"
 
 # Criar wrapper em /usr/local/bin
 cat > /usr/local/bin/cs9711-manager <<'EOF'
@@ -376,18 +402,19 @@ chmod 755 /usr/local/bin/cs9711-manager
 # Instalar ícone PNG transparente 256x256 nos diretórios padrão do sistema
 mkdir -p /usr/share/icons/hicolor/256x256/apps /usr/share/pixmaps
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.png" /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png
+ln -sf /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png /usr/share/icons/hicolor/256x256/apps/com.github.mmhfarooque.cs9711-manager.png
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.png" /usr/share/pixmaps/cs9711-manager.png
+ln -sf /usr/share/pixmaps/cs9711-manager.png /usr/share/pixmaps/com.github.mmhfarooque.cs9711-manager.png
 gtk-update-icon-cache -f -q /usr/share/icons/hicolor 2>/dev/null || true
 
-# Instalar atalho Desktop global
+# Instalar atalho Desktop global (apenas um .desktop para evitar duplicatas no menu)
 cp -a "$SCRIPT_DIR/assets/cs9711-manager.desktop" /usr/share/applications/cs9711-manager.desktop
 chmod 644 /usr/share/applications/cs9711-manager.desktop
-
-# Substituir versão local com caminhos absolutos, se existir
-if [ -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop" ]; then
-    cp -a "$SCRIPT_DIR/assets/cs9711-manager.desktop" "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-    chown "$REAL_USER:$REAL_USER" "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-fi
+rm -f /usr/share/applications/com.github.mmhfarooque.cs9711-manager.desktop 2>/dev/null || true
+rm -f "$REAL_HOME/.local/share/applications/com.github.mmhfarooque.cs9711-manager.desktop" 2>/dev/null || true
+rm -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop" 2>/dev/null || true
+update-desktop-database /usr/share/applications 2>/dev/null || true
+update-desktop-database "$REAL_HOME/.local/share/applications" 2>/dev/null || true
 
 ok "$(_t "Application shortcut and high-resolution icon registered in system." "Atalho e ícone de alta resolução registrados no sistema.")"
 

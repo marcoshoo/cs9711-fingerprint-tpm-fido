@@ -19,6 +19,7 @@ Specifically developed, tested, and optimized for **Ubuntu 26.04 LTS (Resolute)*
 2. **System Authentication (PAM Integration)**:
    - Biometric authentication configured for `sudo`, `sudo -i`, `polkit-1`, and display manager login/lock screens (`gdm-password` / `gdm-fingerprint`).
    - Strict `sufficient` PAM placement preserving 100% password fallback (zero risk of lockouts).
+   - **Smart Remote Session Detection**: Automatically bypasses fingerprint prompts during remote desktop sessions (GNOME Remote Desktop / RDP / VNC / Wayland headless) and SSH connections via `cs9711-check-is-remote`, prompting directly for the password instead of hanging waiting for a physical sensor touch.
 
 3. **TPM 2.0-Backed Virtual FIDO2 Key (`tpm-fido2`)**:
    - Automatic kernel module loading for `uhid` (`/etc/modules-load.d/uhid.conf`).
@@ -48,6 +49,7 @@ install-fingerprint/
 │   ├── 70-tpm-permissions.rules   # TPM access permissions (/dev/tpmrm0)
 │   └── 90-tpm-fido-uhid.rules     # UHID access and Snap browser sandbox permissions
 ├── helpers/
+│   ├── cs9711-check-is-remote     # Session detection helper (remote vs local PAM bypass)
 │   ├── cs9711-update-guard        # Driver restore script triggered on APT upgrades
 │   └── 99-cs9711-guard            # APT DPkg::Post-Invoke hook configuration
 ├── assets/
@@ -156,5 +158,6 @@ sudo ./uninstall.sh
 ## 🔒 Security & Reliability
 
 - **No Lockouts**: All PAM entries use `sufficient` control, ensuring standard password authentication remains fully functional even if the sensor is disconnected.
+- **Remote Session Bypass**: Dynamically skips fingerprint prompts when operating over SSH or remote desktop (GNOME Remote Desktop / RDP), avoiding biometric timeouts when you are not physically at the machine.
 - **APT Upgrade Survival**: The `cs9711-update-guard` monitors APT operations and automatically restores the patched driver whenever an upstream Ubuntu upgrade replaces `libfprint`.
 - **Snap Sandbox Compatibility**: Custom UDEV tags include `snap-device-helper` directives allowing sandboxed browsers to communicate directly with the virtual FIDO2 token.

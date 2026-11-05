@@ -41,8 +41,15 @@ if [ -z "$RETRY_DELAY" ] && [ -f "$CACHE_DIR/retry_delay" ]; then
 fi
 [ -z "$RETRY_DELAY" ] && RETRY_DELAY=1500
 
+ENROLL_STAGES="${2:-${ENROLL_STAGES:-}}"
+if [ -z "$ENROLL_STAGES" ] && [ -f "$CACHE_DIR/enroll_stages" ]; then
+    ENROLL_STAGES=$(cat "$CACHE_DIR/enroll_stages" 2>/dev/null || echo "20")
+fi
+[ -z "$ENROLL_STAGES" ] && ENROLL_STAGES=20
+
 echo "$(_t "=== CS9711 Driver Rebuild ===" "=== Recompilação do Driver CS9711 ===")"
 echo "$(_t "Retry delay" "Intervalo de nova tentativa"): ${RETRY_DELAY}ms"
+echo "$(_t "Enroll stages" "Amostras no cadastro"): ${ENROLL_STAGES}"
 
 # 1. Localizar ou obter o código-fonte do driver
 SRC_DIR="$CACHE_DIR/src"
@@ -64,6 +71,7 @@ echo "$(_t "[2/4] Applying build parameters..." "[2/4] Aplicando parâmetros de 
 CS_SRC="$SRC_DIR/libfprint/drivers/cs9711/cs9711.c"
 if [ -f "$CS_SRC" ]; then
     sed -i "s/#define CS9711_DEFAULT_RESET_SLEEP.*/#define CS9711_DEFAULT_RESET_SLEEP  $RETRY_DELAY/" "$CS_SRC"
+    sed -i "s/dev_class->nr_enroll_stages = .*/dev_class->nr_enroll_stages = $ENROLL_STAGES;/" "$CS_SRC"
 fi
 
 SIGFM="$SRC_DIR/libfprint/sigfm/meson.build"
@@ -92,9 +100,10 @@ echo -e "$LIB_DIR\n/usr/local/lib" > /etc/ld.so.conf.d/99-cs9711-local.conf
 ldconfig
 
 echo "$RETRY_DELAY" > "$CACHE_DIR/retry_delay"
+echo "$ENROLL_STAGES" > "$CACHE_DIR/enroll_stages"
 cp -a "$LIB_DIR"/libfprint-2.so* "$CACHE_DIR"/ 2>/dev/null || true
 echo "$LIB_DIR" > "$CACHE_DIR/install-dir"
 
 systemctl restart fprintd 2>/dev/null || true
 
-echo "$(_t "Success: CS9711 driver rebuilt and active (${RETRY_DELAY}ms)!" "Sucesso: Driver CS9711 recompilado e ativo (${RETRY_DELAY}ms)!")"
+echo "$(_t "Success: CS9711 driver rebuilt and active (${RETRY_DELAY}ms, ${ENROLL_STAGES} stages)!" "Sucesso: Driver CS9711 recompilado e ativo (${RETRY_DELAY}ms, ${ENROLL_STAGES} amostras)!")"

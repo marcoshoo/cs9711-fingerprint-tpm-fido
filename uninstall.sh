@@ -75,6 +75,10 @@ for f in /etc/pam.d/*; do
         sed -i '/# cs9711-managed/d' "$f"
         ok "$(_t "Rules removed from $f" "Regras removidas de $f")"
     fi
+    if grep -q "# cs9711-disabled" "$f"; then
+        sed -i -E 's/^# ([[:space:]]*)(auth|session)([[:space:]]+.*pam_gnome_keyring\.so.*) # cs9711-disabled/\1\2\3/' "$f"
+        ok "$(_t "Keyring PAM rules restored in $f" "Regras de chaveiro no PAM restauradas em $f")"
+    fi
 done
 
 # 3. Remover regras UDEV e módulos
@@ -85,22 +89,24 @@ udevadm control --reload-rules 2>/dev/null || true
 udevadm trigger 2>/dev/null || true
 ok "$(_t "UDEV rules removed" "Regras UDEV removidas")"
 
-# 4. Remover APT Guard
-info "$(_t "Removing APT update guard..." "Removendo guarda de atualizações do APT...")"
+# 4. Remover APT Guard e Helpers
+info "$(_t "Removing APT update guard and helpers..." "Removendo guarda de atualizações do APT e helpers...")"
 rm -f /etc/apt/apt.conf.d/99-cs9711-guard
 rm -f /usr/local/bin/cs9711-update-guard
+rm -f /usr/local/bin/cs9711-check-is-remote
 rm -rf /var/lib/cs9711-fingerprint
-ok "$(_t "APT guard hook and cache removed" "Hook e cache do APT guard removidos")"
+ok "$(_t "APT guard hook, helpers and cache removed" "Hook do APT guard, helpers e cache removidos")"
 
 # 5. Remover GUI Manager e Atalhos Desktop
 info "$(_t "Removing GUI manager and desktop shortcuts..." "Removendo aplicativo gráfico e atalhos...")"
 rm -f /usr/local/bin/cs9711-manager
 rm -rf /usr/local/share/cs9711-manager
-rm -f /usr/share/applications/cs9711-manager.desktop
+rm -f /usr/share/applications/cs9711-manager.desktop /usr/share/applications/com.github.mmhfarooque.cs9711-manager.desktop
 rm -f "$REAL_HOME/.local/share/applications/cs9711-manager.desktop"
-rm -f /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png
-rm -f /usr/share/pixmaps/cs9711-manager.png
+rm -f /usr/share/icons/hicolor/256x256/apps/cs9711-manager.png /usr/share/icons/hicolor/256x256/apps/com.github.mmhfarooque.cs9711-manager.png
+rm -f /usr/share/pixmaps/cs9711-manager.png /usr/share/pixmaps/com.github.mmhfarooque.cs9711-manager.png
 gtk-update-icon-cache -f -q /usr/share/icons/hicolor 2>/dev/null || true
+update-desktop-database /usr/share/applications 2>/dev/null || true
 ok "$(_t "Shortcuts and icons removed" "Atalhos e ícones removidos")"
 
 # 6. Remover Driver customizado e restaurar fprintd

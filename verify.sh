@@ -160,6 +160,8 @@ if echo "$FPRINT_DEV" | grep -qi "CS9711\|9711\|chipsailing"; then
     else
         check_warn "$(_t "No fingerprints enrolled for user $TARGET_USER" "Nenhuma digital cadastrada para o usuário $TARGET_USER")" "$(_t "Enroll with: fprintd-enroll" "Cadastre com: fprintd-enroll")"
     fi
+elif echo "$FPRINT_DEV" | grep -qi "PermissionDenied\|Not Authorized" && echo "$FPRINT_DEV" | grep -qi "Device at /net/reactivated/Fprint\|found [1-9] device"; then
+    check_ok "$(_t "fprintd device detected via D-Bus (fingerprint details restricted by Polkit in remote session)" "Dispositivo fprintd detectado via D-Bus (detalhes de digitais restritos pelo Polkit em sessão remota)")"
 else
     check_fail "$(_t "fprintd does not list CS9711 scanner" "fprintd não lista o sensor CS9711")" "$(_t "Output: $FPRINT_DEV" "Saída: $FPRINT_DEV")"
 fi
@@ -172,17 +174,30 @@ PAM_FILES=("/etc/pam.d/sudo" "/etc/pam.d/polkit-1" "$GDM_PAM")
 for pf in "${PAM_FILES[@]}"; do
     if [ -f "$pf" ] && grep -q "pam_fprintd.so" "$pf"; then
         check_ok "$(_t "Biometric authentication configured in $pf" "Autenticação biométrica configurada em $pf")"
+        if [[ "$pf" == *sudo* || "$pf" == *polkit* ]]; then
+            if grep -q "cs9711-check-is-remote" "$pf"; then
+                check_ok "$(_t "Remote session bypass configured in $pf" "Bypass de sessão remota configurado em $pf")"
+            else
+                check_warn "$(_t "Remote session bypass missing in $pf" "Bypass de sessão remota ausente em $pf")"
+            fi
+        fi
     else
         check_warn "$(_t "Biometrics not configured in $pf" "Biometria não configurada em $pf")"
     fi
 done
 
-# 7. Proteção contra Atualizações do APT
-echo -e "${BOLD}[7/8] $(_t "Driver Protection against 'apt upgrade'" "Proteção do Driver contra 'apt upgrade'")${NC}"
+# 7. Proteção contra Atualizações do APT e Helpers
+echo -e "${BOLD}[7/8] $(_t "Driver Protection & Helpers" "Proteção do Driver e Helpers")${NC}"
 if [ -x /usr/local/bin/cs9711-update-guard ]; then
     check_ok "$(_t "Guard script installed (/usr/local/bin/cs9711-update-guard)" "Script de guarda instalado (/usr/local/bin/cs9711-update-guard)")"
 else
     check_warn "$(_t "Guard script /usr/local/bin/cs9711-update-guard missing or not executable" "Guarda /usr/local/bin/cs9711-update-guard ausente ou sem permissão de execução")"
+fi
+
+if [ -x /usr/local/bin/cs9711-check-is-remote ]; then
+    check_ok "$(_t "Remote session helper installed (/usr/local/bin/cs9711-check-is-remote)" "Helper de sessão remota instalado (/usr/local/bin/cs9711-check-is-remote)")"
+else
+    check_warn "$(_t "Remote session helper /usr/local/bin/cs9711-check-is-remote missing or not executable" "Helper de sessão remota /usr/local/bin/cs9711-check-is-remote ausente ou sem permissão de execução")"
 fi
 
 if [ -f /etc/apt/apt.conf.d/99-cs9711-guard ]; then

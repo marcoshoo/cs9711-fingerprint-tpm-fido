@@ -186,7 +186,7 @@ SERVICE_PAM_FILES = {
         "xfce4-screensaver",     # XFCE
         "light-locker",          # LightDM lock helper
     ],
-    "sudo": ["sudo"],
+    "sudo": ["sudo", "sudo-i"],
     "polkit": ["polkit-1", "polkit-1-kde-1"],
 }
 
@@ -419,6 +419,34 @@ def get_retry_delay():
     return 1500
 
 
+def get_enroll_stages():
+    """Read configured enroll stages from system or driver source."""
+    stages_file = "/var/lib/cs9711-fingerprint/enroll_stages"
+    if os.path.exists(stages_file):
+        try:
+            with open(stages_file) as f:
+                val = int(f.read().strip())
+                if val > 0:
+                    return val
+        except Exception:
+            pass
+    src_candidates = [
+        CS9711_SRC,
+        "/var/lib/cs9711-fingerprint/src/libfprint/drivers/cs9711/cs9711.c",
+    ]
+    for src in src_candidates:
+        if os.path.exists(src):
+            try:
+                with open(src) as f:
+                    for line in f:
+                        m = re.search(r"nr_enroll_stages\s*=\s*(\d+)", line)
+                        if m:
+                            return int(m.group(1))
+            except Exception:
+                pass
+    return 20
+
+
 def get_reinstall_script():
     """Find reinstall.sh across local or installed directories."""
     candidates = [
@@ -567,8 +595,14 @@ def pam_toggle_cmd(location, enable, max_tries=7, timeout=30):
     svc_list = " ".join(s for s in services if re.match(r"^[A-Za-z0-9._-]+$", s))
     fp_opts = f"max-tries={int(max_tries)} timeout={int(timeout)}"
     en = "1" if enable else "0"
-    # INS keeps literal \t; awk -v converts them to tabs when writing the line.
-    ins = f"auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
+    
+    # Preservar o desvio inteligente de sessões remotas para sudo e polkit
+    remote_helper = "/usr/local/bin/cs9711-check-is-remote"
+    if location in ("sudo", "polkit") and (os.path.isfile(remote_helper) or os.path.islink(remote_helper)):
+        bypass_line = f"auth\\t[success=1 default=ignore]\\tpam_exec.so quiet {remote_helper}\\t{PAM_MARK}\\n"
+        ins = f"{bypass_line}auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
+    else:
+        ins = f"auth\\tsufficient\\tpam_fprintd.so\\t{fp_opts}\\t{PAM_MARK}"
     return f'''set -u
 ETC={PAM_DIR}; VENDOR={VENDOR_PAM_DIR}; MARK="{PAM_MARK}"; ENABLE={en}
 INS="{ins}"
@@ -774,16 +808,17 @@ class CS9711Window(Adw.ApplicationWindow):
         """Show enrollment prompt if no fingers enrolled."""
         log.info("First launch check: no fingers enrolled, scanner connected — showing welcome dialog")
         if not self._has_enrolled_fingers and is_scanner_connected():
+            stages = get_enroll_stages()
             dialog = Adw.AlertDialog(
                 heading=_("Welcome! Let's set up your fingerprint"),
                 body=_(
                     "Your CS9711 scanner is connected and the driver is installed.\n\n"
                     "To start using fingerprint login, you need to enroll a finger. "
-                    "This takes 15 touches on the scanner.\n\n"
+                    "This takes {stages} touches on the scanner.\n\n"
                     "By default, your RIGHT INDEX FINGER will be enrolled. "
                     "If you're left-handed, you can change the finger in the dropdown below the Enroll button.\n\n"
                     "Click 'Start Enrollment' to begin — then place your finger on the scanner when prompted."
-                ),
+                ).format(stages=stages),
             )
             dialog.add_response("later", _("Later"))
             dialog.add_response("enroll", _("Start Enrollment"))
@@ -882,8 +917,9 @@ class CS9711Window(Adw.ApplicationWindow):
     # ========================================================================
 
     def build_enrollment_section(self, parent):
+        stages = get_enroll_stages()
         group = Adw.PreferencesGroup(title=_("Fingerprint Enrollment"),
-                                     description=_("15 touches required per finger"))
+                                     description=_("{stages} touches required per finger").format(stages=stages))
         parent.append(group)
 
         # Enrollment status banner
@@ -992,6 +1028,7 @@ class CS9711Window(Adw.ApplicationWindow):
                     ["fprintd-enroll", "-f", finger_id],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
                 )
+                stages = get_enroll_stages()
                 touch_count = 0
                 for line in self._enroll_process.stdout:
                     if self._enroll_cancel:
@@ -1002,12 +1039,12 @@ class CS9711Window(Adw.ApplicationWindow):
                     low = line.lower()
                     if "enroll-stage-passed" in low or "stage passed" in low:
                         touch_count += 1
-                        log.info(f"Enroll touch {touch_count}/15 accepted")
-                        frac = min(touch_count / 15.0, 1.0)
+                        log.info(f"Enroll touch {touch_count}/{stages} accepted")
+                        frac = min(touch_count / float(stages), 1.0)
                         GLib.idle_add(
                             self._enroll_update,
                             frac,
-                            _("Touch {count}/15 — good, keep going!").format(count=touch_count),
+                            _("Touch {count}/{stages} — good, keep going!").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-completed" in low:
                         GLib.idle_add(self._enroll_done, _("Enrollment complete!"), True)
@@ -1015,26 +1052,26 @@ class CS9711Window(Adw.ApplicationWindow):
                     elif "enroll-retry-scan" in low or "retry" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — bad read, try again").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — bad read, try again").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-swipe-too-short" in low or "too short" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — too short, hold longer").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — too short, hold longer").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-finger-not-centered" in low or "not centered" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — center your finger").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — center your finger").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-remove-and-retry" in low or "remove" in low:
                         GLib.idle_add(
                             self._enroll_update,
-                            touch_count / 15.0,
-                            _("Touch {count}/15 — lift and touch again").format(count=touch_count),
+                            touch_count / float(stages),
+                            _("Touch {count}/{stages} — lift and touch again").format(count=touch_count, stages=stages),
                         )
                     elif "enroll-failed" in low or "enroll-unknown-error" in low:
                         GLib.idle_add(self._enroll_done, _("Enrollment failed — try again"), False)
@@ -1067,16 +1104,17 @@ class CS9711Window(Adw.ApplicationWindow):
         self.cancel_enroll_btn.set_visible(False)
         self._enroll_process = None
         if success:
-            self.enroll_progress.set_text(_("All 15 touches done! Enrollment saved."))
+            stages = get_enroll_stages()
+            self.enroll_progress.set_text(_("All {stages} touches done! Enrollment saved.").format(stages=stages))
             self.refresh_all()
             # Ask user if they want to verify
             dialog = Adw.AlertDialog(
                 heading=_("Enrollment complete!"),
                 body=_(
-                    "All 15 touches recorded successfully.\n\n"
+                    "All {stages} touches recorded successfully.\n\n"
                     "Would you like to do a quick verification touch to confirm "
                     "your fingerprint is working?"
-                ),
+                ).format(stages=stages),
             )
             dialog.add_response("skip", _("Skip"))
             dialog.add_response("verify", _("Verify Now"))
@@ -1863,8 +1901,14 @@ true''')
         threading.Thread(target=do_uninstall, daemon=True).start()
 
     def on_keyring(self, btn):
-        helper = os.path.join(SCRIPT_DIR, "helpers", "set-empty-keyring-password.py")
-        if not os.path.exists(helper):
+        candidate_paths = [
+            os.path.join(SCRIPT_DIR, "helpers", "set-empty-keyring-password.py"),
+            os.path.join(os.path.dirname(SCRIPT_DIR), "helpers", "set-empty-keyring-password.py"),
+            "/usr/local/share/cs9711-manager/helpers/set-empty-keyring-password.py",
+            "/usr/local/bin/set-empty-keyring-password.py",
+        ]
+        helper = next((p for p in candidate_paths if os.path.exists(p)), None)
+        if not helper:
             self.show_toast(_("Keyring helper not found"))
             return
 
@@ -1896,7 +1940,7 @@ true''')
         """
         fields = dict(
             application_name=_("CS9711 Fingerprint Manager"),
-            application_icon=APP_ID,
+            application_icon="cs9711-manager",
             version=APP_VERSION,
             developer_name=APP_AUTHOR,
             # libadwaita renders "Name <mail>" as a mailto link in the credits

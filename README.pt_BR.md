@@ -18,6 +18,7 @@ Desenvolvido e testado especificamente para **Ubuntu 26.04 LTS (Resolute)** e **
 2. **Integração com PAM (Autenticação do Sistema)**:
    - Configura biometria para `sudo`, `sudo -i`, `polkit-1` e tela de bloqueio/login (`gdm-password` / `gdm-fingerprint`).
    - Mantém o fallback de senha 100% preservado (sem risco de lockout).
+   - **Detecção Inteligente de Sessões Remotas**: Pula automaticamente a solicitação de biometria em sessões remotas (GNOME Remote Desktop / RDP / VNC / Wayland sem seat físico) e conexões SSH através do helper `cs9711-check-is-remote`, solicitando diretamente a senha em vez de travar aguardando o toque físico no leitor.
 
 3. **Chave Virtual FIDO2 com TPM (`tpm-fido2`)**:
    - Carrega o módulo de kernel `uhid` (`/etc/modules-load.d/uhid.conf`).
@@ -47,6 +48,7 @@ install-fingerprint/
 │   ├── 70-tpm-permissions.rules   # Acesso ao TPM (/dev/tpmrm0)
 │   └── 90-tpm-fido-uhid.rules     # Acesso ao UHID e suporte a navegadores Snap
 ├── helpers/
+│   ├── cs9711-check-is-remote     # Helper de detecção de sessão remota vs física para PAM
 │   ├── cs9711-update-guard        # Script de restauração acionado após transações do APT
 │   └── 99-cs9711-guard            # Configuração DPkg::Post-Invoke do APT
 ├── assets/
@@ -155,5 +157,6 @@ sudo ./uninstall.sh
 ## 🔒 Segurança e Resiliência
 
 - **Sem lockouts**: As regras de PAM são inseridas como `sufficient`, garantindo que você nunca seja bloqueado caso o leitor não esteja conectado.
+- **Desvio Inteligente em Sessões Remotas**: Ignora dinamicamente a biometria quando você estiver acessando a máquina remotamente (SSH ou Área de Trabalho Remota do GNOME/RDP), pedindo diretamente a senha e evitando esperas desnecessárias no terminal.
 - **Sobrevivência ao `apt upgrade`**: O `cs9711-update-guard` detecta quando um update do Ubuntu instala um pacote upstream do `libfprint` e restaura instantaneamente o driver compilado.
 - **Compatibilidade com Snap**: As regras de UDEV incluem diretivas `snap-device-helper` para garantir que navegadores empacotados em sandbox Snap consigam se comunicar com a chave FIDO2 virtual.
