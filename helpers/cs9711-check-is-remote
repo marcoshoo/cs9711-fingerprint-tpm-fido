@@ -50,9 +50,9 @@ if [ "$HAS_USER_SESSION" -eq 1 ] && [ "$IS_REMOTE" -eq 1 ]; then
     exit 0 # Remote session detected
 fi
 
-# 4. Check for active GNOME Remote Desktop handover or headless daemons
-if pgrep -f "gnome-remote-desktop-daemon --handover" >/dev/null 2>&1; then
-    exit 0 # Remote (GNOME Remote Desktop active)
+# 4. Check if target user specifically has an active GNOME Remote Desktop user daemon
+if [ -n "$ALVO_USER" ] && pgrep -u "$ALVO_USER" -x "gnome-remote-de" >/dev/null 2>&1; then
+    exit 0 # Remote (GNOME Remote Desktop active for target user)
 fi
 
 # 5. If user session is local (e.g. seat0)
